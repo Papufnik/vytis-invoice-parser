@@ -35,12 +35,18 @@ if uploaded_file:
                 for line_item_group in expense_doc.get('LineItemGroups', []):
                     for line_item in line_item_group.get('LineItems', []):
                         # Setting up the exact columns Toast requires
-                        item_data = {
-                            "Supplier Item ID": "", 
-                            "Item Name": "", 
-                            "Item Quantity": "1", 
-                            "Receiving Unit": "Each"
-                        }
+                       item_data = {
+            "Supplier Item ID": "",        
+            "Item Name": "",               
+            "Color": "",                   
+            "Size": "",                    
+            "Item Quantity": "1",          
+            "Receiving Unit": "Each",      
+            "Receiving Unit Net Cost": "", 
+            "Price (Retail)": "",          
+            "Barcode": "",                 
+            "SKU": ""                      
+        }
                         
                         for field in line_item.get('LineItemExpenseFields', []):
                             field_type = field.get('Type', {}).get('Text')
