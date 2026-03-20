@@ -87,4 +87,4 @@ if uploaded_file:
                 st.session_state.current_file = uploaded_file.name
 
             except Exception as e:
-                st.error(f"Amazon parsing failed: {
+                st.error(f"Amazon parsing failed: {e}")
