@@ -122,7 +122,7 @@ if uploaded_file:
                         )
                         msg.attach(part)
 
-                        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+                        with smtplib.SMTP("smtp.office365.com", 587) as server:
                             server.starttls()
                             server.login(sender, st.secrets["SENDER_APP_PASSWORD"])
                             server.sendmail(sender, recipient, msg.as_string())
