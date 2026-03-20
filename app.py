@@ -6,6 +6,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
+import re
 
 # --- PASSWORD GATE ---
 APP_PASSWORD = st.secrets["APP_PASSWORD"]
@@ -71,23 +72,33 @@ if uploaded_file:
                             "Receiving Unit Net Cost": "",
                             "Price (Retail)": "",
                             "Barcode": "",
-                            "SKU": ""
+                            "SKU": "",
+                            "_Raw Cost": 0.0, # Hidden helper column for math
+                            "Markup (x)": 2.7 # DEFAULT MULTIPLIER
                         }
 
                         # Fill in what the AI found
                         for field in line_item.get('LineItemExpenseFields', []):
                             field_type = field.get('Type', {}).get('Text')
-                            # Sanitize: Textract can return None if confidence is too low
                             field_val = field.get('ValueDetection', {}).get('Text') or ""
 
                             if field_type == 'ITEM':
-                                item_data["Item Name"] = field_val
+                                # FIX: Append text if the item name spans multiple lines
+                                if item_data["Item Name"]:
+                                    item_data["Item Name"] += " " + field_val
+                                else:
+                                    item_data["Item Name"] = field_val
+                                    
                             elif field_type == 'QUANTITY':
                                 item_data["Item Quantity"] = field_val
                             elif field_type == 'PRODUCT_CODE':
                                 item_data["Supplier Item ID"] = field_val
                             elif field_type == 'UNIT_PRICE':
                                 item_data["Receiving Unit Net Cost"] = field_val
+                                # Clean the string to pull the raw math number
+                                numeric_cost = re.sub(r'[^\d.]', '', field_val)
+                                if numeric_cost:
+                                    item_data["_Raw Cost"] = float(numeric_cost)
                             elif field_type == 'PRICE':
                                 item_data["Price (Retail)"] = field_val
 
@@ -95,17 +106,55 @@ if uploaded_file:
                         if item_data["Item Name"]:
                             items_list.append(item_data)
 
-            # Display the grid and create the download button
+            # Display the interactive grid
             if items_list:
+                st.write("### Review & Price")
+                st.write("Adjust your markup below. Retail prices will automatically calculate and round to the nearest $5.")
+                
                 df = pd.DataFrame(items_list)
-                st.dataframe(df)
+                
+                # Reorder columns so Markup is easy to see
+                cols = list(df.columns)
+                cols.insert(cols.index("Price (Retail)"), cols.pop(cols.index("Markup (x)")))
+                df = df[cols]
+
+                # Create the interactive data editor
+                edited_df = st.data_editor(
+                    df,
+                    hide_index=True,
+                    column_config={
+                        "Markup (x)": st.column_config.NumberColumn(
+                            "Markup (x)",
+                            min_value=0.1,
+                            step=0.1, # Makes the up/down arrows move by 0.1 increments
+                            format="%.1f"
+                        ),
+                        "_Raw Cost": None # Hide the secret math column from the user
+                    }
+                )
+
+                # The Mathematical Engine: Calculate Retail based on Edited Markup
+                def calc_retail(row):
+                    cost = row['_Raw Cost']
+                    markup = row['Markup (x)']
+                    if cost > 0 and markup > 0:
+                        raw_retail = cost * markup
+                        rounded_retail = 5 * round(raw_retail / 5)
+                        return f"{rounded_retail:.2f}"
+                    return row['Price (Retail)']
+
+                # Apply the math engine to the final dataframe
+                edited_df['Price (Retail)'] = edited_df.apply(calc_retail, axis=1)
+
+                # Clean up the hidden math columns before sending to Toast
+                final_export_df = edited_df.drop(columns=['_Raw Cost', 'Markup (x)'])
 
                 if st.button("📤 Send CSV to Back Office"):
                     try:
                         sender = st.secrets["SENDER_EMAIL"]
                         recipient = st.secrets["RECIPIENT_EMAIL"]
 
-                        csv_bytes = df.to_csv(index=False).encode('utf-8')
+                        csv_bytes = final_export_df.to_csv(index=False).encode('utf-8')
 
                         msg = MIMEMultipart()
                         msg["From"] = sender
@@ -122,8 +171,7 @@ if uploaded_file:
                         )
                         msg.attach(part)
 
-                        with smtplib.SMTP("mail.smtp2go.com", 587) as server:
-                            server.starttls()
+                        with smtplib.SMTP("mail.smtp2go.com", 2525) as server:
                             server.login(sender, st.secrets["SENDER_APP_PASSWORD"])
                             server.sendmail(sender, recipient, msg.as_string())
 
@@ -131,7 +179,7 @@ if uploaded_file:
                     except Exception as e:
                         st.error(f"Failed to send email: {type(e).__name__}: {e}")
 
-                csv = df.to_csv(index=False).encode('utf-8')
+                csv = final_export_df.to_csv(index=False).encode('utf-8')
                 st.download_button(
                     label="Download Toast CSV",
                     data=csv,
@@ -142,30 +190,16 @@ if uploaded_file:
                 st.warning("Amazon couldn't find any clear line items on this document.")
 
         except textract.exceptions.UnsupportedDocumentException:
-            st.error(
-                "Unsupported file format. Please upload a JPG, PNG, or single-page PDF."
-            )
+            st.error("Unsupported file format. Please upload a JPG, PNG, or single-page PDF.")
         except textract.exceptions.DocumentTooLargeException:
-            st.error(
-                "This file is too large for Amazon Textract (5 MB limit for direct upload). "
-                "Please compress the image and try again."
-            )
+            st.error("This file is too large for Amazon Textract. Please compress the image and try again.")
         except textract.exceptions.BadDocumentException:
-            st.error(
-                "Amazon could not read this document. The image may be too blurry, "
-                "rotated, or corrupt. Try re-scanning at 300 DPI or higher."
-            )
+            st.error("Amazon could not read this document. Try re-scanning at 300 DPI or higher.")
         except textract.exceptions.ProvisionedThroughputExceededException:
-            st.error(
-                "The scanning service is temporarily overloaded. Wait 30 seconds and try again."
-            )
+            st.error("The scanning service is temporarily overloaded. Wait 30 seconds and try again.")
         except textract.exceptions.ThrottlingException:
-            st.error(
-                "Too many requests sent to Amazon. Please wait a moment and re-upload."
-            )
+            st.error("Too many requests sent to Amazon. Please wait a moment and re-upload.")
         except textract.exceptions.InvalidParameterException as e:
             st.error(f"Invalid request sent to Amazon Textract: {e}")
         except Exception as e:
-            st.error(
-                f"An unexpected error occurred. Details for your developer: `{type(e).__name__}: {e}`"
-            )
+            st.error(f"An unexpected error occurred. Details for your developer: `{type(e).__name__}: {e}`")
