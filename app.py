@@ -8,6 +8,21 @@ from email.mime.base import MIMEBase
 from email import encoders
 import re
 
+# --- MOBILE UI OPTIMIZATIONS ---
+st.set_page_config(page_title="Invoice Scanner", page_icon="🧾", layout="centered")
+
+st.markdown("""
+    <style>
+    /* Make buttons thick and easy to tap on mobile screens */
+    .stButton>button {
+        height: 3.5em;
+        font-size: 18px;
+        font-weight: bold;
+        border-radius: 8px;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
 # --- PASSWORD GATE ---
 APP_PASSWORD = st.secrets["APP_PASSWORD"]
 
@@ -15,9 +30,9 @@ if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 
 if not st.session_state.authenticated:
-    st.title("Mary Jane's Invoice Scanner")
+    st.title("Mary Jane's Scanner")
     entered = st.text_input("Enter password to continue:", type="password")
-    if st.button("Login"):
+    if st.button("Login", use_container_width=True):
         if entered == APP_PASSWORD:
             st.session_state.authenticated = True
             st.rerun()
@@ -26,8 +41,8 @@ if not st.session_state.authenticated:
     st.stop()
 # --- END PASSWORD GATE ---
 
-st.title("Mary Jane's Invoice Scanner")
-st.write("Upload a vendor packing slip to generate a Toast/Shopify inventory CSV.")
+st.title("Mary Jane's Invoice Scanner 🧾")
+st.write("Snap a picture of a vendor packing slip.")
 
 # Connect to the secure AWS Vault
 try:
@@ -42,18 +57,17 @@ except KeyError as e:
     st.error(f"Missing AWS credential in secrets: {e}. Contact your administrator.")
     st.stop()
 
-# The Upload Button
-uploaded_file = st.file_uploader("Upload an Image", type=["jpg", "jpeg", "png", "pdf"])
+# The Upload Button (Mobile phones will automatically ask "Take Photo or Choose Library" here)
+uploaded_file = st.file_uploader("Upload Image", type=["jpg", "jpeg", "png", "pdf"])
 
 if uploaded_file:
-    # BUG FIX 1: THE CACHE. Only call Amazon if this is a brand new file.
+    # 1. THE CACHE: Only call Amazon if this is a brand new file.
     if "current_file" not in st.session_state or st.session_state.current_file != uploaded_file.name:
-        st.success(f"File '{uploaded_file.name}' uploaded! Sending to Amazon AI...")
+        st.info("Scanning document with Amazon AI... this takes about 10 seconds.")
         
-        with st.spinner("Analyzing document..."):
+        with st.spinner("Processing lines..."):
             try:
                 document_bytes = uploaded_file.read()
-                # Call the Amazon Textract Expense AI
                 response = textract.analyze_expense(Document={'Bytes': document_bytes})
 
                 items_list = []
@@ -63,7 +77,7 @@ if uploaded_file:
                     for line_item_group in expense_doc.get('LineItemGroups', []):
                         for line_item in line_item_group.get('LineItems', []):
 
-                            # The Master Toast/Shopify Matrix Dictionary
+                            # The Master Toast/Shopify Matrix
                             item_data = {
                                 "Supplier Item ID": "",
                                 "Item Name": "",
@@ -75,11 +89,10 @@ if uploaded_file:
                                 "Price (Retail)": "",
                                 "Barcode": "",
                                 "SKU": "",
-                                "_Raw Cost": 0.0, # Hidden helper column for math
+                                "_Raw Cost": 0.0, 
                                 "Markup (x)": 2.7 # DEFAULT MULTIPLIER
                             }
 
-                            # Fill in what the AI found
                             for field in line_item.get('LineItemExpenseFields', []):
                                 field_type = field.get('Type', {}).get('Text')
                                 field_val = field.get('ValueDetection', {}).get('Text') or ""
@@ -104,33 +117,35 @@ if uploaded_file:
                             if item_data["Item Name"]:
                                 items_list.append(item_data)
 
-                # Lock the extracted data in the vault so Amazon isn't called again
+                # Lock the extracted data in the vault
                 st.session_state.invoice_data = pd.DataFrame(items_list)
                 st.session_state.current_file = uploaded_file.name
 
             except Exception as e:
                 st.error(f"Amazon parsing failed: {type(e).__name__}: {e}")
 
-    # BUG FIX 2: THE RECALCULATION LOOP. Display the grid from the cached data.
+    # 2. THE BULLETPROOF DATA PIPELINE
     if "invoice_data" in st.session_state and not st.session_state.invoice_data.empty:
-        st.write("### Review & Price")
-        st.write("Adjust your markup below. Retail prices will instantly calculate and round to the nearest $5. **You can also double-click an Item Name to fix it if the AI missed a line.**")
+        st.divider()
+        st.subheader("1. Adjust Markup")
+        st.caption("Scroll right to edit multipliers. Double-tap an Item Name to fix typos.")
         
         df = st.session_state.invoice_data.copy()
         
-        # Reorder columns so Markup is easy to see
+        # Reorder columns so Markup is easy to see on mobile
         if "Markup (x)" in df.columns and "Price (Retail)" in df.columns:
             cols = list(df.columns)
             cols.insert(cols.index("Price (Retail)"), cols.pop(cols.index("Markup (x)")))
             df = df[cols]
 
-        # Create the interactive data editor
+        # Interactive data editor (User Inputs)
         edited_df = st.data_editor(
             df,
             hide_index=True,
+            use_container_width=True,
             column_config={
                 "Markup (x)": st.column_config.NumberColumn(
-                    "Markup (x)",
+                    "Markup", # Shorter title for mobile screens
                     min_value=0.1,
                     step=0.1,
                     format="%.1f"
@@ -152,52 +167,64 @@ if uploaded_file:
                 pass
             return row['Price (Retail)']
 
-        # Calculate the new retail prices based on the user's edits
-        new_df = edited_df.copy()
-        new_df['Price (Retail)'] = new_df.apply(calc_retail, axis=1)
-
-        # If the newly calculated math doesn't match the vault, update the vault and reload the UI instantly
-        if not new_df.equals(st.session_state.invoice_data):
-            st.session_state.invoice_data = new_df
-            st.rerun()
+        # Apply the math to create the final data
+        final_df = edited_df.copy()
+        final_df['Price (Retail)'] = final_df.apply(calc_retail, axis=1)
 
         # Clean up the hidden math columns before sending to Toast
-        final_export_df = new_df.drop(columns=['_Raw Cost', 'Markup (x)'])
+        final_export_df = final_df.drop(columns=['_Raw Cost', 'Markup (x)'])
 
-        if st.button("📤 Send CSV to Back Office"):
-            try:
-                sender = st.secrets["SENDER_EMAIL"]
-                recipient = st.secrets["RECIPIENT_EMAIL"]
+        st.divider()
+        st.subheader("2. Final Price Preview")
+        st.caption("Verify final retail prices before sending.")
+        
+        # Show a slimmed down mobile preview
+        st.dataframe(
+            final_export_df[['Item Name', 'Receiving Unit Net Cost', 'Price (Retail)']], 
+            hide_index=True, 
+            use_container_width=True
+        )
 
-                csv_bytes = final_export_df.to_csv(index=False).encode('utf-8')
+        st.divider()
+        # THE PRIMARY ACTION BUTTON
+        if st.button("📤 Send CSV to Back Office", type="primary", use_container_width=True):
+            with st.spinner("Sending secure email..."):
+                try:
+                    sender = st.secrets["SENDER_EMAIL"]
+                    recipient = st.secrets["RECIPIENT_EMAIL"]
 
-                msg = MIMEMultipart()
-                msg["From"] = sender
-                msg["To"] = recipient
-                msg["Subject"] = "Toast Invoice Upload"
-                msg.attach(MIMEText("Please find the invoice CSV attached.", "plain"))
+                    csv_bytes = final_export_df.to_csv(index=False).encode('utf-8')
 
-                part = MIMEBase("application", "octet-stream")
-                part.set_payload(csv_bytes)
-                encoders.encode_base64(part)
-                part.add_header(
-                    "Content-Disposition",
-                    'attachment; filename="toast_invoice_upload.csv"',
-                )
-                msg.attach(part)
+                    msg = MIMEMultipart()
+                    msg["From"] = sender
+                    msg["To"] = recipient
+                    msg["Subject"] = "Toast Invoice Upload"
+                    msg.attach(MIMEText("Please find the invoice CSV attached.", "plain"))
 
-                with smtplib.SMTP("mail.smtp2go.com", 2525) as server:
-                    server.login(sender, st.secrets["SENDER_APP_PASSWORD"])
-                    server.sendmail(sender, recipient, msg.as_string())
+                    part = MIMEBase("application", "octet-stream")
+                    part.set_payload(csv_bytes)
+                    encoders.encode_base64(part)
+                    part.add_header(
+                        "Content-Disposition",
+                        'attachment; filename="toast_invoice_upload.csv"',
+                    )
+                    msg.attach(part)
 
-                st.success("CSV sent to Back Office successfully!")
-            except Exception as e:
-                st.error(f"Failed to send email: {type(e).__name__}: {e}")
+                    with smtplib.SMTP("mail.smtp2go.com", 2525) as server:
+                        server.login(sender, st.secrets["SENDER_APP_PASSWORD"])
+                        server.sendmail(sender, recipient, msg.as_string())
 
+                    st.success("✅ CSV sent to Back Office successfully!")
+                    st.balloons()
+                except Exception as e:
+                    st.error(f"Failed to send email: {type(e).__name__}: {e}")
+
+        # Secondary Backup Button
         csv = final_export_df.to_csv(index=False).encode('utf-8')
         st.download_button(
-            label="Download Toast CSV",
+            label="📥 Download CSV Backup",
             data=csv,
             file_name="toast_inventory_upload.csv",
             mime="text/csv",
+            use_container_width=True
         )
