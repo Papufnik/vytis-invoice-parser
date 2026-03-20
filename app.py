@@ -125,4 +125,39 @@ if uploaded_file:
                                 items_list.append(item_data)
 
                 # Lock the extracted data in the vault
-                st.session_state.invoice
+                st.session_state.invoice_data = pd.DataFrame(items_list)
+                st.session_state.current_file = uploaded_file.name
+
+            except Exception as e:
+                st.error(f"Amazon parsing failed: {type(e).__name__}: {e}")
+
+    # 2. THE NEW MOBILE CARD UI
+    if "invoice_data" in st.session_state and not st.session_state.invoice_data.empty:
+        st.divider()
+        st.subheader("1. Item Review & Pricing")
+        st.caption("Verify item names and adjust your markups below.")
+        
+        # Pull the data out of the vault to work with it
+        working_data = st.session_state.invoice_data.to_dict('records')
+        
+        # Build a beautiful, isolated card for every single item
+        for i, row in enumerate(working_data):
+            # The 'border=True' creates a distinct visual box for each item
+            with st.container(border=True):
+                
+                # Big, easy text box to fix any missing lines from Amazon
+                new_name = st.text_input(
+                    f"Item {i+1} Description", 
+                    value=row["Item Name"], 
+                    key=f"name_{i}"
+                )
+                
+                # Break the math into three clean columns
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.metric("Cost", f"${row['_Raw Cost']:.2f}")
+                    
+                with col2:
+                    new_markup = st.number_input(
+                        "Markup",
