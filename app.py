@@ -20,6 +20,11 @@ st.markdown("""
         font-weight: bold;
         border-radius: 8px;
     }
+    /* Make the metric numbers pop a bit more */
+    [data-testid="stMetricValue"] {
+        font-size: 1.8rem;
+        color: #1E88E5; 
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -72,12 +77,10 @@ if uploaded_file:
 
                 items_list = []
 
-                # Parse the AI response
                 for expense_doc in response.get('ExpenseDocuments', []):
                     for line_item_group in expense_doc.get('LineItemGroups', []):
                         for line_item in line_item_group.get('LineItems', []):
 
-                            # The Master Toast/Shopify Matrix
                             item_data = {
                                 "Supplier Item ID": "",
                                 "Item Name": "",
@@ -90,7 +93,7 @@ if uploaded_file:
                                 "Barcode": "",
                                 "SKU": "",
                                 "_Raw Cost": 0.0, 
-                                "Markup (x)": 2.7 # DEFAULT MULTIPLIER
+                                "Markup (x)": 2.7 
                             }
 
                             for field in line_item.get('LineItemExpenseFields', []):
@@ -109,10 +112,8 @@ if uploaded_file:
                                 elif field_type == 'UNIT_PRICE':
                                     item_data["Receiving Unit Net Cost"] = field_val
                                     
-                                    # FIX 1: THE COMMA BUG
-                                    # If Amazon reads 49,44, this forces the last comma to become a decimal point
+                                    # FIX: THE COMMA BUG
                                     fixed_val = re.sub(r',(\d{2})$', r'.\1', field_val.strip())
-                                    # Now strip everything except numbers and the true decimal
                                     numeric_cost = re.sub(r'[^\d.]', '', fixed_val)
                                     
                                     if numeric_cost:
@@ -130,71 +131,66 @@ if uploaded_file:
             except Exception as e:
                 st.error(f"Amazon parsing failed: {type(e).__name__}: {e}")
 
-    # 2. THE BULLETPROOF DATA PIPELINE
+    # 2. THE NEW MOBILE CARD UI
     if "invoice_data" in st.session_state and not st.session_state.invoice_data.empty:
         st.divider()
-        st.subheader("1. Adjust Markup")
-        st.caption("Double-tap an Item Name to fix typos.")
+        st.subheader("1. Item Review & Pricing")
+        st.caption("Verify item names and adjust your markups below.")
         
-        df = st.session_state.invoice_data.copy()
+        # Pull the data out of the vault to work with it
+        working_data = st.session_state.invoice_data.to_dict('records')
         
-        if "Markup (x)" in df.columns and "Price (Retail)" in df.columns:
-            cols = list(df.columns)
-            cols.insert(cols.index("Price (Retail)"), cols.pop(cols.index("Markup (x)")))
-            df = df[cols]
-
-        # FIX 2: THE MOBILE UI DIET
-        # We set unnecessary columns to 'None' so they hide from the screen, 
-        # but they remain safe in the background CSV data.
-        edited_df = st.data_editor(
-            df,
-            hide_index=True,
-            use_container_width=True,
-            column_config={
-                "Markup (x)": st.column_config.NumberColumn(
-                    "Markup", 
-                    min_value=0.1,
-                    step=0.1,
-                    format="%.1f"
-                ),
-                "_Raw Cost": None,
-                "Supplier Item ID": None,
-                "Color": None,
-                "Size": None,
-                "Item Quantity": None,
-                "Receiving Unit": None,
-                "Barcode": None,
-                "SKU": None,
-                "Item Name": st.column_config.TextColumn(
-                    "Item Name",
-                    width="medium" 
+        # Build a beautiful, isolated card for every single item
+        for i, row in enumerate(working_data):
+            # The 'border=True' creates a distinct visual box for each item
+            with st.container(border=True):
+                
+                # Big, easy text box to fix any missing lines from Amazon
+                new_name = st.text_input(
+                    f"Item {i+1} Description", 
+                    value=row["Item Name"], 
+                    key=f"name_{i}"
                 )
-            }
-        )
+                
+                # Break the math into three clean columns
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.metric("Cost", f"${row['_Raw Cost']:.2f}")
+                    
+                with col2:
+                    new_markup = st.number_input(
+                        "Markup", 
+                        value=float(row.get("Markup (x)", 2.7)), 
+                        step=0.1, 
+                        format="%.1f", 
+                        key=f"markup_{i}"
+                    )
+                    
+                with col3:
+                    # Instantly calculate and round the retail price
+                    raw_retail = row['_Raw Cost'] * new_markup
+                    if raw_retail > 0:
+                        rounded_retail = 5 * round(raw_retail / 5)
+                    else:
+                        rounded_retail = 0
+                    
+                    st.metric("Retail", f"${rounded_retail:.2f}")
+                
+                # Save the user's edits back to the working data
+                working_data[i]["Item Name"] = new_name
+                working_data[i]["Markup (x)"] = new_markup
+                working_data[i]["Price (Retail)"] = f"{rounded_retail:.2f}"
 
-        # The Mathematical Engine
-        def calc_retail(row):
-            try:
-                cost = float(row['_Raw Cost'])
-                markup = float(row['Markup (x)'])
-                if cost > 0 and markup > 0:
-                    raw_retail = cost * markup
-                    rounded_retail = 5 * round(raw_retail / 5)
-                    return f"{rounded_retail:.2f}"
-            except:
-                pass
-            return row['Price (Retail)']
-
-        # Apply the math to create the final data
-        final_df = edited_df.copy()
-        final_df['Price (Retail)'] = final_df.apply(calc_retail, axis=1)
-
-        # Clean up the hidden math columns before sending to Toast
+        # Convert the newly edited cards back into a final Master Spreadsheet
+        final_df = pd.DataFrame(working_data)
         final_export_df = final_df.drop(columns=['_Raw Cost', 'Markup (x)'])
 
         st.divider()
-        st.subheader("2. Final Price Preview")
+        st.subheader("2. Master Spreadsheet Preview")
+        st.caption("This is the exact file going to the back office.")
         
+        # Display the classic spreadsheet view at the bottom
         st.dataframe(
             final_export_df[['Item Name', 'Receiving Unit Net Cost', 'Price (Retail)']], 
             hide_index=True, 
@@ -229,19 +225,4 @@ if uploaded_file:
 
                     with smtplib.SMTP("mail.smtp2go.com", 2525) as server:
                         server.login(sender, st.secrets["SENDER_APP_PASSWORD"])
-                        server.sendmail(sender, recipient, msg.as_string())
-
-                    st.success("✅ CSV sent to Back Office successfully!")
-                    st.balloons()
-                except Exception as e:
-                    st.error(f"Failed to send email: {type(e).__name__}: {e}")
-
-        # Secondary Backup Button
-        csv = final_export_df.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="📥 Download CSV Backup",
-            data=csv,
-            file_name="toast_inventory_upload.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
+                        server.sendmail(sender, recipient, msg
