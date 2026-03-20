@@ -1,6 +1,11 @@
 import streamlit as st
 import boto3
 import pandas as pd
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
 
 # --- PASSWORD GATE ---
 APP_PASSWORD = st.secrets["APP_PASSWORD"]
@@ -94,6 +99,37 @@ if uploaded_file:
             if items_list:
                 df = pd.DataFrame(items_list)
                 st.dataframe(df)
+
+                if st.button("📤 Send CSV to Back Office"):
+                    try:
+                        sender = st.secrets["SENDER_EMAIL"]
+                        recipient = st.secrets["RECIPIENT_EMAIL"]
+
+                        csv_bytes = df.to_csv(index=False).encode('utf-8')
+
+                        msg = MIMEMultipart()
+                        msg["From"] = sender
+                        msg["To"] = recipient
+                        msg["Subject"] = "Toast Invoice Upload"
+                        msg.attach(MIMEText("Please find the invoice CSV attached.", "plain"))
+
+                        part = MIMEBase("application", "octet-stream")
+                        part.set_payload(csv_bytes)
+                        encoders.encode_base64(part)
+                        part.add_header(
+                            "Content-Disposition",
+                            'attachment; filename="toast_invoice_upload.csv"',
+                        )
+                        msg.attach(part)
+
+                        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+                            server.starttls()
+                            server.login(sender, st.secrets["SENDER_APP_PASSWORD"])
+                            server.sendmail(sender, recipient, msg.as_string())
+
+                        st.success("CSV sent to Back Office successfully!")
+                    except Exception as e:
+                        st.error(f"Failed to send email: {type(e).__name__}: {e}")
 
                 csv = df.to_csv(index=False).encode('utf-8')
                 st.download_button(
