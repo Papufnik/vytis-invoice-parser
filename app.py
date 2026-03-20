@@ -57,7 +57,7 @@ except KeyError as e:
     st.error(f"Missing AWS credential in secrets: {e}. Contact your administrator.")
     st.stop()
 
-# The Upload Button (Mobile phones will automatically ask "Take Photo or Choose Library" here)
+# The Upload Button
 uploaded_file = st.file_uploader("Upload Image", type=["jpg", "jpeg", "png", "pdf"])
 
 if uploaded_file:
@@ -108,7 +108,13 @@ if uploaded_file:
                                     item_data["Supplier Item ID"] = field_val
                                 elif field_type == 'UNIT_PRICE':
                                     item_data["Receiving Unit Net Cost"] = field_val
-                                    numeric_cost = re.sub(r'[^\d.]', '', field_val)
+                                    
+                                    # FIX 1: THE COMMA BUG
+                                    # If Amazon reads 49,44, this forces the last comma to become a decimal point
+                                    fixed_val = re.sub(r',(\d{2})$', r'.\1', field_val.strip())
+                                    # Now strip everything except numbers and the true decimal
+                                    numeric_cost = re.sub(r'[^\d.]', '', fixed_val)
+                                    
                                     if numeric_cost:
                                         item_data["_Raw Cost"] = float(numeric_cost)
                                 elif field_type == 'PRICE':
@@ -128,29 +134,41 @@ if uploaded_file:
     if "invoice_data" in st.session_state and not st.session_state.invoice_data.empty:
         st.divider()
         st.subheader("1. Adjust Markup")
-        st.caption("Scroll right to edit multipliers. Double-tap an Item Name to fix typos.")
+        st.caption("Double-tap an Item Name to fix typos.")
         
         df = st.session_state.invoice_data.copy()
         
-        # Reorder columns so Markup is easy to see on mobile
         if "Markup (x)" in df.columns and "Price (Retail)" in df.columns:
             cols = list(df.columns)
             cols.insert(cols.index("Price (Retail)"), cols.pop(cols.index("Markup (x)")))
             df = df[cols]
 
-        # Interactive data editor (User Inputs)
+        # FIX 2: THE MOBILE UI DIET
+        # We set unnecessary columns to 'None' so they hide from the screen, 
+        # but they remain safe in the background CSV data.
         edited_df = st.data_editor(
             df,
             hide_index=True,
             use_container_width=True,
             column_config={
                 "Markup (x)": st.column_config.NumberColumn(
-                    "Markup", # Shorter title for mobile screens
+                    "Markup", 
                     min_value=0.1,
                     step=0.1,
                     format="%.1f"
                 ),
-                "_Raw Cost": None # Keep the raw math hidden
+                "_Raw Cost": None,
+                "Supplier Item ID": None,
+                "Color": None,
+                "Size": None,
+                "Item Quantity": None,
+                "Receiving Unit": None,
+                "Barcode": None,
+                "SKU": None,
+                "Item Name": st.column_config.TextColumn(
+                    "Item Name",
+                    width="medium" 
+                )
             }
         )
 
@@ -176,9 +194,7 @@ if uploaded_file:
 
         st.divider()
         st.subheader("2. Final Price Preview")
-        st.caption("Verify final retail prices before sending.")
         
-        # Show a slimmed down mobile preview
         st.dataframe(
             final_export_df[['Item Name', 'Receiving Unit Net Cost', 'Price (Retail)']], 
             hide_index=True, 
@@ -186,6 +202,7 @@ if uploaded_file:
         )
 
         st.divider()
+        
         # THE PRIMARY ACTION BUTTON
         if st.button("📤 Send CSV to Back Office", type="primary", use_container_width=True):
             with st.spinner("Sending secure email..."):
