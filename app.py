@@ -46,160 +46,158 @@ except KeyError as e:
 uploaded_file = st.file_uploader("Upload an Image", type=["jpg", "jpeg", "png", "pdf"])
 
 if uploaded_file:
-    st.success(f"File '{uploaded_file.name}' uploaded! Sending to Amazon AI...")
+    # BUG FIX 1: THE CACHE. Only call Amazon if this is a brand new file.
+    if "current_file" not in st.session_state or st.session_state.current_file != uploaded_file.name:
+        st.success(f"File '{uploaded_file.name}' uploaded! Sending to Amazon AI...")
+        
+        with st.spinner("Analyzing document..."):
+            try:
+                document_bytes = uploaded_file.read()
+                # Call the Amazon Textract Expense AI
+                response = textract.analyze_expense(Document={'Bytes': document_bytes})
 
-    with st.spinner("Analyzing document..."):
-        try:
-            document_bytes = uploaded_file.read()
-            # Call the Amazon Textract Expense AI
-            response = textract.analyze_expense(Document={'Bytes': document_bytes})
+                items_list = []
 
-            items_list = []
+                # Parse the AI response
+                for expense_doc in response.get('ExpenseDocuments', []):
+                    for line_item_group in expense_doc.get('LineItemGroups', []):
+                        for line_item in line_item_group.get('LineItems', []):
 
-            # Parse the AI response
-            for expense_doc in response.get('ExpenseDocuments', []):
-                for line_item_group in expense_doc.get('LineItemGroups', []):
-                    for line_item in line_item_group.get('LineItems', []):
+                            # The Master Toast/Shopify Matrix Dictionary
+                            item_data = {
+                                "Supplier Item ID": "",
+                                "Item Name": "",
+                                "Color": "",
+                                "Size": "",
+                                "Item Quantity": "1",
+                                "Receiving Unit": "Each",
+                                "Receiving Unit Net Cost": "",
+                                "Price (Retail)": "",
+                                "Barcode": "",
+                                "SKU": "",
+                                "_Raw Cost": 0.0, # Hidden helper column for math
+                                "Markup (x)": 2.7 # DEFAULT MULTIPLIER
+                            }
 
-                        # The Master Toast/Shopify Matrix Dictionary
-                        item_data = {
-                            "Supplier Item ID": "",
-                            "Item Name": "",
-                            "Color": "",
-                            "Size": "",
-                            "Item Quantity": "1",
-                            "Receiving Unit": "Each",
-                            "Receiving Unit Net Cost": "",
-                            "Price (Retail)": "",
-                            "Barcode": "",
-                            "SKU": "",
-                            "_Raw Cost": 0.0, # Hidden helper column for math
-                            "Markup (x)": 2.7 # DEFAULT MULTIPLIER
-                        }
+                            # Fill in what the AI found
+                            for field in line_item.get('LineItemExpenseFields', []):
+                                field_type = field.get('Type', {}).get('Text')
+                                field_val = field.get('ValueDetection', {}).get('Text') or ""
 
-                        # Fill in what the AI found
-                        for field in line_item.get('LineItemExpenseFields', []):
-                            field_type = field.get('Type', {}).get('Text')
-                            field_val = field.get('ValueDetection', {}).get('Text') or ""
+                                if field_type == 'ITEM':
+                                    if item_data["Item Name"]:
+                                        item_data["Item Name"] += " " + field_val
+                                    else:
+                                        item_data["Item Name"] = field_val
+                                elif field_type == 'QUANTITY':
+                                    item_data["Item Quantity"] = field_val
+                                elif field_type == 'PRODUCT_CODE':
+                                    item_data["Supplier Item ID"] = field_val
+                                elif field_type == 'UNIT_PRICE':
+                                    item_data["Receiving Unit Net Cost"] = field_val
+                                    numeric_cost = re.sub(r'[^\d.]', '', field_val)
+                                    if numeric_cost:
+                                        item_data["_Raw Cost"] = float(numeric_cost)
+                                elif field_type == 'PRICE':
+                                    item_data["Price (Retail)"] = field_val
 
-                            if field_type == 'ITEM':
-                                # FIX: Append text if the item name spans multiple lines
-                                if item_data["Item Name"]:
-                                    item_data["Item Name"] += " " + field_val
-                                else:
-                                    item_data["Item Name"] = field_val
-                                    
-                            elif field_type == 'QUANTITY':
-                                item_data["Item Quantity"] = field_val
-                            elif field_type == 'PRODUCT_CODE':
-                                item_data["Supplier Item ID"] = field_val
-                            elif field_type == 'UNIT_PRICE':
-                                item_data["Receiving Unit Net Cost"] = field_val
-                                # Clean the string to pull the raw math number
-                                numeric_cost = re.sub(r'[^\d.]', '', field_val)
-                                if numeric_cost:
-                                    item_data["_Raw Cost"] = float(numeric_cost)
-                            elif field_type == 'PRICE':
-                                item_data["Price (Retail)"] = field_val
+                            if item_data["Item Name"]:
+                                items_list.append(item_data)
 
-                        # Only keep rows that actually have an item name
-                        if item_data["Item Name"]:
-                            items_list.append(item_data)
+                # Lock the extracted data in the vault so Amazon isn't called again
+                st.session_state.invoice_data = pd.DataFrame(items_list)
+                st.session_state.current_file = uploaded_file.name
 
-            # Display the interactive grid
-            if items_list:
-                st.write("### Review & Price")
-                st.write("Adjust your markup below. Retail prices will automatically calculate and round to the nearest $5.")
-                
-                df = pd.DataFrame(items_list)
-                
-                # Reorder columns so Markup is easy to see
-                cols = list(df.columns)
-                cols.insert(cols.index("Price (Retail)"), cols.pop(cols.index("Markup (x)")))
-                df = df[cols]
+            except Exception as e:
+                st.error(f"Amazon parsing failed: {type(e).__name__}: {e}")
 
-                # Create the interactive data editor
-                edited_df = st.data_editor(
-                    df,
-                    hide_index=True,
-                    column_config={
-                        "Markup (x)": st.column_config.NumberColumn(
-                            "Markup (x)",
-                            min_value=0.1,
-                            step=0.1, # Makes the up/down arrows move by 0.1 increments
-                            format="%.1f"
-                        ),
-                        "_Raw Cost": None # Hide the secret math column from the user
-                    }
+    # BUG FIX 2: THE RECALCULATION LOOP. Display the grid from the cached data.
+    if "invoice_data" in st.session_state and not st.session_state.invoice_data.empty:
+        st.write("### Review & Price")
+        st.write("Adjust your markup below. Retail prices will instantly calculate and round to the nearest $5. **You can also double-click an Item Name to fix it if the AI missed a line.**")
+        
+        df = st.session_state.invoice_data.copy()
+        
+        # Reorder columns so Markup is easy to see
+        if "Markup (x)" in df.columns and "Price (Retail)" in df.columns:
+            cols = list(df.columns)
+            cols.insert(cols.index("Price (Retail)"), cols.pop(cols.index("Markup (x)")))
+            df = df[cols]
+
+        # Create the interactive data editor
+        edited_df = st.data_editor(
+            df,
+            hide_index=True,
+            column_config={
+                "Markup (x)": st.column_config.NumberColumn(
+                    "Markup (x)",
+                    min_value=0.1,
+                    step=0.1,
+                    format="%.1f"
+                ),
+                "_Raw Cost": None # Keep the raw math hidden
+            }
+        )
+
+        # The Mathematical Engine
+        def calc_retail(row):
+            try:
+                cost = float(row['_Raw Cost'])
+                markup = float(row['Markup (x)'])
+                if cost > 0 and markup > 0:
+                    raw_retail = cost * markup
+                    rounded_retail = 5 * round(raw_retail / 5)
+                    return f"{rounded_retail:.2f}"
+            except:
+                pass
+            return row['Price (Retail)']
+
+        # Calculate the new retail prices based on the user's edits
+        new_df = edited_df.copy()
+        new_df['Price (Retail)'] = new_df.apply(calc_retail, axis=1)
+
+        # If the newly calculated math doesn't match the vault, update the vault and reload the UI instantly
+        if not new_df.equals(st.session_state.invoice_data):
+            st.session_state.invoice_data = new_df
+            st.rerun()
+
+        # Clean up the hidden math columns before sending to Toast
+        final_export_df = new_df.drop(columns=['_Raw Cost', 'Markup (x)'])
+
+        if st.button("📤 Send CSV to Back Office"):
+            try:
+                sender = st.secrets["SENDER_EMAIL"]
+                recipient = st.secrets["RECIPIENT_EMAIL"]
+
+                csv_bytes = final_export_df.to_csv(index=False).encode('utf-8')
+
+                msg = MIMEMultipart()
+                msg["From"] = sender
+                msg["To"] = recipient
+                msg["Subject"] = "Toast Invoice Upload"
+                msg.attach(MIMEText("Please find the invoice CSV attached.", "plain"))
+
+                part = MIMEBase("application", "octet-stream")
+                part.set_payload(csv_bytes)
+                encoders.encode_base64(part)
+                part.add_header(
+                    "Content-Disposition",
+                    'attachment; filename="toast_invoice_upload.csv"',
                 )
+                msg.attach(part)
 
-                # The Mathematical Engine: Calculate Retail based on Edited Markup
-                def calc_retail(row):
-                    cost = row['_Raw Cost']
-                    markup = row['Markup (x)']
-                    if cost > 0 and markup > 0:
-                        raw_retail = cost * markup
-                        rounded_retail = 5 * round(raw_retail / 5)
-                        return f"{rounded_retail:.2f}"
-                    return row['Price (Retail)']
+                with smtplib.SMTP("mail.smtp2go.com", 2525) as server:
+                    server.login(sender, st.secrets["SENDER_APP_PASSWORD"])
+                    server.sendmail(sender, recipient, msg.as_string())
 
-                # Apply the math engine to the final dataframe
-                edited_df['Price (Retail)'] = edited_df.apply(calc_retail, axis=1)
+                st.success("CSV sent to Back Office successfully!")
+            except Exception as e:
+                st.error(f"Failed to send email: {type(e).__name__}: {e}")
 
-                # Clean up the hidden math columns before sending to Toast
-                final_export_df = edited_df.drop(columns=['_Raw Cost', 'Markup (x)'])
-
-                if st.button("📤 Send CSV to Back Office"):
-                    try:
-                        sender = st.secrets["SENDER_EMAIL"]
-                        recipient = st.secrets["RECIPIENT_EMAIL"]
-
-                        csv_bytes = final_export_df.to_csv(index=False).encode('utf-8')
-
-                        msg = MIMEMultipart()
-                        msg["From"] = sender
-                        msg["To"] = recipient
-                        msg["Subject"] = "Toast Invoice Upload"
-                        msg.attach(MIMEText("Please find the invoice CSV attached.", "plain"))
-
-                        part = MIMEBase("application", "octet-stream")
-                        part.set_payload(csv_bytes)
-                        encoders.encode_base64(part)
-                        part.add_header(
-                            "Content-Disposition",
-                            'attachment; filename="toast_invoice_upload.csv"',
-                        )
-                        msg.attach(part)
-
-                        with smtplib.SMTP("mail.smtp2go.com", 2525) as server:
-                            server.login(sender, st.secrets["SENDER_APP_PASSWORD"])
-                            server.sendmail(sender, recipient, msg.as_string())
-
-                        st.success("CSV sent to Back Office successfully!")
-                    except Exception as e:
-                        st.error(f"Failed to send email: {type(e).__name__}: {e}")
-
-                csv = final_export_df.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label="Download Toast CSV",
-                    data=csv,
-                    file_name="toast_inventory_upload.csv",
-                    mime="text/csv",
-                )
-            else:
-                st.warning("Amazon couldn't find any clear line items on this document.")
-
-        except textract.exceptions.UnsupportedDocumentException:
-            st.error("Unsupported file format. Please upload a JPG, PNG, or single-page PDF.")
-        except textract.exceptions.DocumentTooLargeException:
-            st.error("This file is too large for Amazon Textract. Please compress the image and try again.")
-        except textract.exceptions.BadDocumentException:
-            st.error("Amazon could not read this document. Try re-scanning at 300 DPI or higher.")
-        except textract.exceptions.ProvisionedThroughputExceededException:
-            st.error("The scanning service is temporarily overloaded. Wait 30 seconds and try again.")
-        except textract.exceptions.ThrottlingException:
-            st.error("Too many requests sent to Amazon. Please wait a moment and re-upload.")
-        except textract.exceptions.InvalidParameterException as e:
-            st.error(f"Invalid request sent to Amazon Textract: {e}")
-        except Exception as e:
-            st.error(f"An unexpected error occurred. Details for your developer: `{type(e).__name__}: {e}`")
+        csv = final_export_df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="Download Toast CSV",
+            data=csv,
+            file_name="toast_inventory_upload.csv",
+            mime="text/csv",
+        )
