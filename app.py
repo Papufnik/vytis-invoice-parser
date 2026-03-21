@@ -84,7 +84,7 @@ if uploaded_file:
                                 "Color": "",
                                 "Size": "",
                                 "Item Quantity": "1",
-                                "Receiving Unit": "Each",
+                                "Receiving Unit": "Each", # Default value
                                 "Receiving Unit Net Cost": "",
                                 "Price (Retail)": "",
                                 "Barcode": "",
@@ -117,6 +117,13 @@ if uploaded_file:
                                     item_data["Price (Retail)"] = field_val
 
                             if item_data["Item Name"]:
+                                # --- NEW LOGIC: Scan description for Sets/Packs ---
+                                set_match = re.search(r'(?i)(set\s+of\s+\d+|pack\s+of\s+\d+)', item_data["Item Name"])
+                                if set_match:
+                                    # Capitalize just the first letter (e.g., "Set of 4")
+                                    item_data["Receiving Unit"] = set_match.group(1).capitalize()
+                                # --------------------------------------------------
+                                
                                 items_list.append(item_data)
 
                 st.session_state.invoice_data = pd.DataFrame(items_list)
@@ -195,7 +202,10 @@ if uploaded_file:
                 export_df.at[i, 'Price (Retail)'] = str(round_to_nearest_5(row['_Raw Cost'] * markup))
 
         st.subheader("Full Spreadsheet Preview")
-        st.dataframe(export_df, use_container_width=True, hide_index=True)
+        
+        # We use a data editor here so you can still manually change "Set of 4" to "Each" 
+        # if you ever need to break a set open to sell individually before exporting!
+        edited_export_df = st.data_editor(export_df, use_container_width=True, hide_index=True)
 
         st.divider()
 
@@ -207,7 +217,8 @@ if uploaded_file:
                     sender = st.secrets["SENDER_EMAIL"]
                     recipient = st.secrets["RECIPIENT_EMAIL"]
 
-                    csv_bytes = export_df.to_csv(index=False).encode('utf-8')
+                    # Grab from the edited df so manual fixes are saved
+                    csv_bytes = edited_export_df.to_csv(index=False).encode('utf-8')
 
                     msg = MIMEMultipart()
                     msg["From"] = sender
@@ -237,7 +248,7 @@ if uploaded_file:
         with col2:
             st.download_button(
                 label="⬇️ Download Toast CSV",
-                data=export_df.to_csv(index=False).encode('utf-8'),
+                data=edited_export_df.to_csv(index=False).encode('utf-8'),
                 file_name="toast_invoice_upload.csv",
                 mime="text/csv",
                 use_container_width=True,
