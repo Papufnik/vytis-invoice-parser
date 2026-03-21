@@ -52,6 +52,9 @@ except KeyError as e:
     st.error(f"Missing AWS credential in secrets: {e}. Contact your administrator.")
     st.stop()
 
+def round_to_nearest_5(value):
+    return int(round(value / 5) * 5)
+
 EXPORT_COLUMNS = [
     "Supplier Item ID", "Item Name", "Color", "Size",
     "Item Quantity", "Receiving Unit", "Receiving Unit Net Cost",
@@ -176,8 +179,8 @@ if uploaded_file:
 
                 with col2:
                     if row['_Raw Cost'] > 0:
-                        retail = round(row['_Raw Cost'] * markup, 2)
-                        st.metric("Retail Price", f"${retail:.2f}")
+                        retail = round_to_nearest_5(row['_Raw Cost'] * markup)
+                        st.metric("Retail Price", f"${retail}")
                     else:
                         st.metric("Retail Price", "—")
                         st.caption("No cost detected")
@@ -189,7 +192,7 @@ if uploaded_file:
         for i, row in df.iterrows():
             markup = st.session_state.get(f"markup_{i}", 2.7)
             if row['_Raw Cost'] > 0:
-                export_df.at[i, 'Price (Retail)'] = f"{round(row['_Raw Cost'] * markup, 2):.2f}"
+                export_df.at[i, 'Price (Retail)'] = str(round_to_nearest_5(row['_Raw Cost'] * markup))
 
         st.subheader("Full Spreadsheet Preview")
         st.dataframe(export_df, use_container_width=True, hide_index=True)
@@ -221,7 +224,8 @@ if uploaded_file:
                     )
                     msg.attach(part)
 
-                    with smtplib.SMTP("smtp.gmail.com", 587) as server:
+                    # --- FIXED SMTP SERVER ---
+                    with smtplib.SMTP("mail.smtp2go.com", 2525) as server:
                         server.starttls()
                         server.login(sender, st.secrets["SENDER_APP_PASSWORD"])
                         server.sendmail(sender, recipient, msg.as_string())
