@@ -52,7 +52,6 @@ except KeyError as e:
     st.error(f"Missing AWS credential in secrets: {e}. Contact your administrator.")
     st.stop()
 
-# Columns that get exported to the Toast CSV (internal helper columns are excluded)
 EXPORT_COLUMNS = [
     "Supplier Item ID", "Item Name", "Color", "Size",
     "Item Quantity", "Receiving Unit", "Receiving Unit Net Cost",
@@ -63,7 +62,7 @@ EXPORT_COLUMNS = [
 uploaded_file = st.file_uploader("Upload Image", type=["jpg", "jpeg", "png", "pdf"])
 
 if uploaded_file:
-    # Only call Textract when a new file is uploaded — skips re-scanning on every rerender
+    # Only call Textract when a new file is uploaded
     if "current_file" not in st.session_state or st.session_state.current_file != uploaded_file.name:
         st.info("Scanning document with Amazon AI... this takes about 10 seconds.")
 
@@ -88,7 +87,6 @@ if uploaded_file:
                                 "Barcode": "",
                                 "SKU": "",
                                 "_Raw Cost": 0.0,
-                                "Markup (x)": 2.7,
                             }
 
                             for field in line_item.get('LineItemExpenseFields', []):
@@ -106,7 +104,6 @@ if uploaded_file:
                                     item_data["Supplier Item ID"] = field_val
                                 elif field_type == 'UNIT_PRICE':
                                     item_data["Receiving Unit Net Cost"] = field_val
-                                    # Handle both US (1,234.56) and European (1.234,56) formats
                                     numeric_cost = re.sub(r'[^\d.]', '', re.sub(r',(\d{2})$', r'.\1', field_val.strip()))
                                     if numeric_cost:
                                         try:
@@ -121,6 +118,11 @@ if uploaded_file:
 
                 st.session_state.invoice_data = pd.DataFrame(items_list)
                 st.session_state.current_file = uploaded_file.name
+
+                # Clear markup values from any previous invoice
+                for key in list(st.session_state.keys()):
+                    if key.startswith("markup_"):
+                        del st.session_state[key]
 
             except textract.exceptions.UnsupportedDocumentException:
                 st.error("Unsupported file format. Please upload a JPG, PNG, or single-page PDF.")
@@ -144,14 +146,55 @@ if uploaded_file:
                 st.error(f"An unexpected error occurred: `{type(e).__name__}: {e}`")
 
     # --- DISPLAY RESULTS ---
-    # This block runs on every rerender so results stay visible after the scan completes
     if "invoice_data" in st.session_state and not st.session_state.invoice_data.empty:
         df = st.session_state.invoice_data
 
-        st.success(f"Found {len(df)} line item(s). You can edit any cell before sending.")
+        st.success(f"Found {len(df)} line item(s). Adjust markups below.")
+        st.subheader("Pricing")
 
-        # Editable grid — user can fix anything Textract got wrong before exporting
-        edited_df = st.data_editor(df, use_container_width=True, hide_index=True)
+        # One card per item — adjust markup and see retail price update live
+        for i, row in df.iterrows():
+            with st.container(border=True):
+                st.markdown(f"**{row['Item Name']}**")
+                if row['Supplier Item ID']:
+                    st.caption(f"ID: {row['Supplier Item ID']}")
+
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    st.markdown("**Markup ×**")
+                    markup = st.number_input(
+                        "Markup",
+                        min_value=0.1,
+                        max_value=99.0,
+                        value=float(st.session_state.get(f"markup_{i}", 2.7)),
+                        step=0.1,
+                        format="%.2f",
+                        key=f"markup_{i}",
+                        label_visibility="collapsed",
+                    )
+
+                with col2:
+                    if row['_Raw Cost'] > 0:
+                        retail = round(row['_Raw Cost'] * markup, 2)
+                        st.metric("Retail Price", f"${retail:.2f}")
+                    else:
+                        st.metric("Retail Price", "—")
+                        st.caption("No cost detected")
+
+        st.divider()
+
+        # Build the export dataframe with computed retail prices applied
+        export_df = df[EXPORT_COLUMNS].copy()
+        for i, row in df.iterrows():
+            markup = st.session_state.get(f"markup_{i}", 2.7)
+            if row['_Raw Cost'] > 0:
+                export_df.at[i, 'Price (Retail)'] = f"{round(row['_Raw Cost'] * markup, 2):.2f}"
+
+        st.subheader("Full Spreadsheet Preview")
+        st.dataframe(export_df, use_container_width=True, hide_index=True)
+
+        st.divider()
 
         col1, col2 = st.columns(2)
 
@@ -161,7 +204,7 @@ if uploaded_file:
                     sender = st.secrets["SENDER_EMAIL"]
                     recipient = st.secrets["RECIPIENT_EMAIL"]
 
-                    csv_bytes = edited_df[EXPORT_COLUMNS].to_csv(index=False).encode('utf-8')
+                    csv_bytes = export_df.to_csv(index=False).encode('utf-8')
 
                     msg = MIMEMultipart()
                     msg["From"] = sender
@@ -190,7 +233,7 @@ if uploaded_file:
         with col2:
             st.download_button(
                 label="⬇️ Download Toast CSV",
-                data=edited_df[EXPORT_COLUMNS].to_csv(index=False).encode('utf-8'),
+                data=export_df.to_csv(index=False).encode('utf-8'),
                 file_name="toast_invoice_upload.csv",
                 mime="text/csv",
                 use_container_width=True,
@@ -199,6 +242,9 @@ if uploaded_file:
         st.divider()
 
         if st.button("🔄 Scan a New Invoice", use_container_width=True):
+            for key in list(st.session_state.keys()):
+                if key.startswith("markup_"):
+                    del st.session_state[key]
             del st.session_state.invoice_data
             del st.session_state.current_file
             st.rerun()
