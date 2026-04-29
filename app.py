@@ -129,7 +129,7 @@ if uploaded_files:
                 with st.spinner("Analyzing invoices with Gemini Pro..."):
                     try:
                         genai.configure(api_key=api_key)
-                        model = genai.GenerativeModel('gemini-1.5-pro')
+                        model = genai.GenerativeModel('gemini-pro-latest')
                         
                         prompt = get_system_prompt(extra_instructions)
                         images = [Image.open(file) for file in uploaded_files]
