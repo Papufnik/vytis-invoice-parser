@@ -111,7 +111,7 @@ if uploaded_files:
             if not api_key:
                 st.error("Please provide a Gemini API Key in the sidebar or AWS secrets.")
             else:
-                with st.spinner("Analyzing invoices with Gemini 1.5 Pro..."):
+                with st.spinner("Analyzing invoices with Gemini Pro..."):
                     try:
                         genai.configure(api_key=api_key)
                         model = genai.GenerativeModel('gemini-pro-latest')
