@@ -229,4 +229,136 @@ if "invoice_data" in st.session_state and not st.session_state.invoice_data.empt
         # Generate Shopify Handle
         pos_str = str(pos_name)
         handle = re.sub(r'[^a-z0-9 ]+', '', pos_str.lower()).strip()
-        handle = re.sub(r
+        handle = re.sub(r'\s+', '-', handle)
+        
+        # Determine the Option names based on the first variant
+        first_row = group.iloc[0]
+        c_val = str(first_row['color']).strip()
+        s_val = str(first_row['size']).strip()
+        
+        if c_val and s_val:
+            opt1_n, opt2_n = "Color", "Size"
+        elif c_val and not s_val:
+            opt1_n, opt2_n = "Color", ""
+        elif not c_val and s_val:
+            opt1_n, opt2_n = "Size", ""
+        else:
+            opt1_n, opt2_n = "Title", ""
+
+        for _, row in group.iterrows():
+            s_row = {col: "" for col in SHOPIFY_COLUMNS}
+            s_row['URL handle'] = handle
+            s_row['SKU'] = row['name']
+            
+            # Clean up Barcode (Remove the ="" formula so Shopify reads it normally)
+            raw_bc = str(row['barcode']).replace('="', '').replace('"', '')
+            s_row['Barcode'] = raw_bc
+            
+            s_row['Price'] = row['price']
+            s_row['Cost per item'] = row['cost']
+            
+            # Variant Option Values
+            r_color = str(row['color']).strip()
+            r_size = str(row['size']).strip()
+            
+            if opt1_n == "Color" and opt2_n == "Size":
+                s_row['Option1 value'] = r_color
+                s_row['Option2 value'] = r_size
+            elif opt1_n == "Color" and opt2_n == "":
+                s_row['Option1 value'] = r_color
+            elif opt1_n == "Size" and opt2_n == "":
+                s_row['Option1 value'] = r_size
+            else:
+                s_row['Option1 value'] = "Default Title"
+            
+            s_row['Charge tax'] = 'TRUE'
+            s_row['Fulfillment service'] = 'manual'
+            s_row['Inventory tracker'] = 'shopify'
+            s_row['Inventory quantity'] = '0'
+            s_row['Continue selling when out of stock'] = 'deny'
+            
+            # Only fill these fields out for the FIRST row of the product
+            if is_first:
+                s_row['Title'] = pos_str.title()
+                s_row['Vendor'] = row['supplier']
+                s_row['Product category'] = "Apparel & Accessories"
+                s_row['Type'] = row['category']
+                s_row['Tags'] = f"{row['supplier']}, Retail" if row['supplier'] else "Retail"
+                s_row['Published on online store'] = 'FALSE'
+                s_row['Status'] = 'draft'
+                
+                s_row['Option1 name'] = opt1_n
+                s_row['Option2 name'] = opt2_n
+                
+                is_first = False
+            
+            shopify_rows.append(s_row)
+            
+    shopify_output = pd.DataFrame(shopify_rows, columns=SHOPIFY_COLUMNS)
+
+    st.divider()
+
+    # --- EXPORT BUTTONS ---
+    col1, col2, col3 = st.columns([2, 1, 1])
+
+    with col1:
+        if st.button("📤 Email BOTH to Back Office", use_container_width=True):
+            try:
+                sender = st.secrets["SENDER_EMAIL"]
+                recipient = st.secrets["RECIPIENT_EMAIL"]
+                sender_pwd = st.secrets["SENDER_APP_PASSWORD"]
+
+                toast_bytes = toast_output.to_csv(index=False).encode('utf-8')
+                shopify_bytes = shopify_output.to_csv(index=False).encode('utf-8')
+
+                msg = MIMEMultipart()
+                msg["From"] = sender
+                msg["To"] = recipient
+                msg["Subject"] = f"Invoice Uploads - {brand_name}"
+                msg.attach(MIMEText(f"Attached are the Toast and Shopify CSV files for {brand_name}.", "plain"))
+
+                part1 = MIMEBase("application", "octet-stream")
+                part1.set_payload(toast_bytes)
+                encoders.encode_base64(part1)
+                part1.add_header("Content-Disposition", f'attachment; filename="{toast_filename}"')
+                msg.attach(part1)
+
+                part2 = MIMEBase("application", "octet-stream")
+                part2.set_payload(shopify_bytes)
+                encoders.encode_base64(part2)
+                part2.add_header("Content-Disposition", f'attachment; filename="{shopify_filename}"')
+                msg.attach(part2)
+
+                with smtplib.SMTP("mail.smtp2go.com", 2525) as server:
+                    server.starttls()
+                    server.login(sender, sender_pwd)
+                    server.sendmail(sender, recipient, msg.as_string())
+
+                st.success("✅ Both CSVs sent to Back Office successfully!")
+            except Exception as e:
+                st.error(f"Failed to send email: {type(e).__name__}: {e}")
+
+    with col2:
+        st.download_button(
+            label="⬇️ Download Toast CSV",
+            data=toast_output.to_csv(index=False).encode('utf-8'),
+            file_name=toast_filename,
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+    with col3:
+        st.download_button(
+            label="⬇️ Download Shopify CSV",
+            data=shopify_output.to_csv(index=False).encode('utf-8'),
+            file_name=shopify_filename,
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+    st.divider()
+
+    if st.button("🔄 Scan a New Invoice", use_container_width=True):
+        del st.session_state.invoice_data
+        del st.session_state.current_files
+        st.rerun()
