@@ -1,8 +1,9 @@
 import streamlit as st
-import boto3
+import google.generativeai as genai
 import pandas as pd
+import io
 import smtplib
-import re
+from PIL import Image
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
@@ -19,7 +20,11 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- PASSWORD GATE ---
-APP_PASSWORD = st.secrets["APP_PASSWORD"]
+try:
+    APP_PASSWORD = st.secrets["APP_PASSWORD"]
+except KeyError:
+    st.error("⚠️ App password not found in secrets. Please configure it.")
+    st.stop()
 
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
@@ -36,230 +41,165 @@ if not st.session_state.authenticated:
     st.stop()
 # --- END PASSWORD GATE ---
 
-st.title("Mary Jane's Invoice Scanner 🧾")
-st.write("Snap a picture of a vendor packing slip.")
-
-# --- AWS TEXTRACT CLIENT ---
+# --- SIDEBAR CONFIG ---
+st.sidebar.title("⚙️ Settings")
+# Use secrets if available, otherwise allow manual input
 try:
-    textract = boto3.client(
-        'textract',
-        aws_access_key_id=st.secrets["AWS_ACCESS_KEY_ID"].strip(),
-        aws_secret_access_key=st.secrets["AWS_SECRET_ACCESS_KEY"].strip(),
-        region_name=st.secrets["AWS_REGION"].strip(),
-        aws_session_token=None
-    )
-except KeyError as e:
-    st.error(f"Missing AWS credential in secrets: {e}. Contact your administrator.")
-    st.stop()
+    default_api_key = st.secrets["GEMINI_API_KEY"]
+except KeyError:
+    default_api_key = ""
 
-def round_to_nearest_5(value):
-    return int(round(value / 5) * 5)
+api_key = st.sidebar.text_input("Gemini API Key", value=default_api_key, type="password")
 
-EXPORT_COLUMNS = [
-    "Supplier Item ID", "Item Name", "Color", "Size",
-    "Item Quantity", "Receiving Unit", "Receiving Unit Net Cost",
-    "Price (Retail)", "Barcode", "SKU"
-]
+st.sidebar.markdown("""
+---
+**Instructions for Employees:**
+1. Upload vendor invoice images.
+2. Add any context in the text box (e.g., 'All items are new').
+3. Review the data, make edits if needed, and email to the Back Office.
+""")
 
-# --- FILE UPLOAD ---
-uploaded_file = st.file_uploader("Upload Image", type=["jpg", "jpeg", "png", "pdf"])
+# --- MAIN UI ---
+st.title("Mary Jane's Invoice Scanner 🧾")
+st.write("Snap a picture of a vendor packing slip or invoice.")
 
-if uploaded_file:
-    # Only call Textract when a new file is uploaded
-    if "current_file" not in st.session_state or st.session_state.current_file != uploaded_file.name:
-        st.info("Scanning document with Amazon AI... this takes about 10 seconds.")
+# Additional Instructions (Handles the "No handwritten notes" scenario)
+extra_instructions = st.text_area(
+    "Context / Instructions (Optional)", 
+    placeholder="e.g., 'All items on this invoice are new.', 'Markup is 4x instead of 3x.'",
+    help="Provide context if there are no handwritten notes on the invoice."
+)
 
-        with st.spinner("Processing lines..."):
-            try:
-                document_bytes = uploaded_file.read()
-                response = textract.analyze_expense(Document={'Bytes': document_bytes})
-                items_list = []
+uploaded_files = st.file_uploader("Upload Image(s)", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
-                for expense_doc in response.get('ExpenseDocuments', []):
-                    for line_item_group in expense_doc.get('LineItemGroups', []):
-                        for line_item in line_item_group.get('LineItems', []):
-                            item_data = {
-                                "Supplier Item ID": "",
-                                "Item Name": "",
-                                "Color": "",
-                                "Size": "",
-                                "Item Quantity": "1",
-                                "Receiving Unit": "Each", # Default value
-                                "Receiving Unit Net Cost": "",
-                                "Price (Retail)": "",
-                                "Barcode": "",
-                                "SKU": "",
-                                "_Raw Cost": 0.0,
-                            }
+def get_system_prompt(user_instructions):
+    return f"""
+    You are a Retail Inventory Migration Specialist extracting data from wholesale invoice images.
+    Your objective is to extract data and format it perfectly into a CSV for a Toast Retail upload.
+    
+    CRITICAL RULE: Output ONLY valid, raw CSV text. Do not include markdown wrappers (like ```csv), and do not include conversational text.
+    
+    CSV Columns Required Exactly:
+    name,pos name,category group,category,subcategory,price,cost,barcode,supplier
+    
+    Extraction & Logic Rules:
+    1. Filtering: ONLY extract line items that are hand-marked, underlined, or explicitly labeled as "New". 
+       If the user provides Additional Instructions regarding which items to process, prioritize those instructions.
+    2. Naming Convention (name column):
+       - Clothing Sized: [SKU]-[Color]-[Size] (e.g., MT-2200-Navy-S)
+       - Clothing One-Size: [SKU]-[Color]
+       - Non-Clothing: Just the [SKU]
+    3. POS Name: Copy the description verbatim from the invoice.
+    4. Category Mapping: Map based on item type (Accessories, Beer, BTG Wine, Clothing, Gifts, Handbags, Hats, Home, Jewelry, Snacks & Drinks, Wine Bottles). 
+       Category Group is ALWAYS "Retail".
+    5. Cost & Price:
+       - Cost: Handwritten value if present; else printed unit cost. Do not round the cost.
+       - Price: Handwritten retail price. If missing, calculate as Cost * 3. ALWAYS round the final retail price to the nearest whole dollar.
+    6. Barcode: Printed UPC/barcode or leave blank.
+    7. Subcategory & Supplier: Use the brand name found at the top of the invoice.
+    
+    User Additional Instructions: {user_instructions}
+    """
 
-                            for field in line_item.get('LineItemExpenseFields', []):
-                                field_type = field.get('Type', {}).get('Text')
-                                field_val = field.get('ValueDetection', {}).get('Text') or ""
-
-                                if field_type == 'ITEM':
-                                    item_data["Item Name"] = (
-                                        item_data["Item Name"] + " " + field_val
-                                        if item_data["Item Name"] else field_val
-                                    )
-                                elif field_type == 'QUANTITY':
-                                    item_data["Item Quantity"] = field_val
-                                elif field_type == 'PRODUCT_CODE':
-                                    item_data["Supplier Item ID"] = field_val
-                                elif field_type == 'UNIT_PRICE':
-                                    item_data["Receiving Unit Net Cost"] = field_val
-                                    numeric_cost = re.sub(r'[^\d.]', '', re.sub(r',(\d{2})$', r'.\1', field_val.strip()))
-                                    if numeric_cost:
-                                        try:
-                                            item_data["_Raw Cost"] = float(numeric_cost)
-                                        except ValueError:
-                                            pass
-                                elif field_type == 'PRICE':
-                                    item_data["Price (Retail)"] = field_val
-
-                            if item_data["Item Name"]:
-                                # --- NEW LOGIC: Scan description for Sets/Packs ---
-                                set_match = re.search(r'(?i)(set\s+of\s+\d+|pack\s+of\s+\d+)', item_data["Item Name"])
-                                if set_match:
-                                    # Capitalize just the first letter (e.g., "Set of 4")
-                                    item_data["Receiving Unit"] = set_match.group(1).capitalize()
-                                # --------------------------------------------------
-                                
-                                items_list.append(item_data)
-
-                st.session_state.invoice_data = pd.DataFrame(items_list)
-                st.session_state.current_file = uploaded_file.name
-
-                # Clear markup values from any previous invoice
-                for key in list(st.session_state.keys()):
-                    if key.startswith("markup_"):
-                        del st.session_state[key]
-
-            except textract.exceptions.UnsupportedDocumentException:
-                st.error("Unsupported file format. Please upload a JPG, PNG, or single-page PDF.")
-            except textract.exceptions.DocumentTooLargeException:
-                st.error(
-                    "This file is too large for Amazon Textract (5 MB limit). "
-                    "Please compress the image and try again."
-                )
-            except textract.exceptions.BadDocumentException:
-                st.error(
-                    "Amazon could not read this document. The image may be too blurry, "
-                    "rotated, or corrupt. Try re-scanning at 300 DPI or higher."
-                )
-            except textract.exceptions.ProvisionedThroughputExceededException:
-                st.error("The scanning service is temporarily overloaded. Wait 30 seconds and try again.")
-            except textract.exceptions.ThrottlingException:
-                st.error("Too many requests sent to Amazon. Please wait a moment and re-upload.")
-            except textract.exceptions.InvalidParameterException as e:
-                st.error(f"Invalid request sent to Amazon Textract: {e}")
-            except Exception as e:
-                st.error(f"An unexpected error occurred: `{type(e).__name__}: {e}`")
-
-    # --- DISPLAY RESULTS ---
-    if "invoice_data" in st.session_state and not st.session_state.invoice_data.empty:
-        df = st.session_state.invoice_data
-
-        st.success(f"Found {len(df)} line item(s). Adjust markups below.")
-        st.subheader("Pricing")
-
-        # One card per item — adjust markup and see retail price update live
-        for i, row in df.iterrows():
-            with st.container(border=True):
-                st.markdown(f"**{row['Item Name']}**")
-                if row['Supplier Item ID']:
-                    st.caption(f"ID: {row['Supplier Item ID']}")
-
-                col1, col2 = st.columns(2)
-
-                with col1:
-                    st.markdown("**Markup ×**")
-                    markup = st.number_input(
-                        "Markup",
-                        min_value=0.1,
-                        max_value=99.0,
-                        value=float(st.session_state.get(f"markup_{i}", 2.7)),
-                        step=0.1,
-                        format="%.2f",
-                        key=f"markup_{i}",
-                        label_visibility="collapsed",
-                    )
-
-                with col2:
-                    if row['_Raw Cost'] > 0:
-                        retail = round_to_nearest_5(row['_Raw Cost'] * markup)
-                        st.metric("Retail Price", f"${retail}")
-                    else:
-                        st.metric("Retail Price", "—")
-                        st.caption("No cost detected")
-
-        st.divider()
-
-        # Build the export dataframe with computed retail prices applied
-        export_df = df[EXPORT_COLUMNS].copy()
-        for i, row in df.iterrows():
-            markup = st.session_state.get(f"markup_{i}", 2.7)
-            if row['_Raw Cost'] > 0:
-                export_df.at[i, 'Price (Retail)'] = str(round_to_nearest_5(row['_Raw Cost'] * markup))
-
-        st.subheader("Full Spreadsheet Preview")
+# --- PROCESSING ---
+if uploaded_files:
+    # Use session state to avoid reprocessing on every interaction
+    file_names = [f.name for f in uploaded_files]
+    if "current_files" not in st.session_state or st.session_state.current_files != file_names:
         
-        # We use a data editor here so you can still manually change "Set of 4" to "Each" 
-        # if you ever need to break a set open to sell individually before exporting!
-        edited_export_df = st.data_editor(export_df, use_container_width=True, hide_index=True)
+        if st.button("✨ Extract Data", use_container_width=True, type="primary"):
+            if not api_key:
+                st.error("Please provide a Gemini API Key in the sidebar or AWS secrets.")
+            else:
+                with st.spinner("Analyzing invoices with Gemini 1.5 Pro..."):
+                    try:
+                        genai.configure(api_key=api_key)
+                        model = genai.GenerativeModel('gemini-1.5-pro-latest')
+                        
+                        prompt = get_system_prompt(extra_instructions)
+                        images = [Image.open(file) for file in uploaded_files]
+                        inputs = [prompt] + images
+                        
+                        response = model.generate_content(inputs)
+                        
+                        # Clean markdown wrappers from output
+                        raw_csv = response.text.strip()
+                        if raw_csv.startswith("```csv"): raw_csv = raw_csv[6:]
+                        if raw_csv.startswith("```"): raw_csv = raw_csv[3:]
+                        if raw_csv.endswith("```"): raw_csv = raw_csv[:-3]
+                        raw_csv = raw_csv.strip()
+                        
+                        df = pd.read_csv(io.StringIO(raw_csv))
+                        
+                        st.session_state.invoice_data = df
+                        st.session_state.current_files = file_names
+                        st.rerun()
 
-        st.divider()
+                    except pd.errors.ParserError:
+                        st.error("❌ The AI failed to format the output as a valid CSV. Please adjust your instructions.")
+                        with st.expander("View Raw AI Output"):
+                            st.text(response.text)
+                    except Exception as e:
+                        st.error(f"❌ An error occurred: {str(e)}")
 
-        col1, col2 = st.columns(2)
+# --- DISPLAY & EXPORT ---
+if "invoice_data" in st.session_state and not st.session_state.invoice_data.empty:
+    st.success("✅ Extraction Complete! Review and edit the data below before sending.")
+    
+    # Interactive Data Editor
+    edited_export_df = st.data_editor(st.session_state.invoice_data, use_container_width=True, hide_index=True)
+    
+    st.divider()
 
-        with col1:
-            if st.button("📤 Send CSV to Back Office", use_container_width=True):
-                try:
-                    sender = st.secrets["SENDER_EMAIL"]
-                    recipient = st.secrets["RECIPIENT_EMAIL"]
+    col1, col2 = st.columns(2)
 
-                    # Grab from the edited df so manual fixes are saved
-                    csv_bytes = edited_export_df.to_csv(index=False).encode('utf-8')
+    with col1:
+        if st.button("📤 Send CSV to Back Office", use_container_width=True):
+            try:
+                sender = st.secrets["SENDER_EMAIL"]
+                recipient = st.secrets["RECIPIENT_EMAIL"]
+                sender_pwd = st.secrets["SENDER_APP_PASSWORD"]
 
-                    msg = MIMEMultipart()
-                    msg["From"] = sender
-                    msg["To"] = recipient
-                    msg["Subject"] = "Toast Invoice Upload"
-                    msg.attach(MIMEText("Please find the invoice CSV attached.", "plain"))
+                csv_bytes = edited_export_df.to_csv(index=False).encode('utf-8')
 
-                    part = MIMEBase("application", "octet-stream")
-                    part.set_payload(csv_bytes)
-                    encoders.encode_base64(part)
-                    part.add_header(
-                        "Content-Disposition",
-                        'attachment; filename="toast_invoice_upload.csv"',
-                    )
-                    msg.attach(part)
+                msg = MIMEMultipart()
+                msg["From"] = sender
+                msg["To"] = recipient
+                msg["Subject"] = "Toast Invoice Upload - New Items"
+                msg.attach(MIMEText("Please find the extracted new items CSV attached.", "plain"))
 
-                    # --- FIXED SMTP SERVER ---
-                    with smtplib.SMTP("mail.smtp2go.com", 2525) as server:
-                        server.starttls()
-                        server.login(sender, st.secrets["SENDER_APP_PASSWORD"])
-                        server.sendmail(sender, recipient, msg.as_string())
+                part = MIMEBase("application", "octet-stream")
+                part.set_payload(csv_bytes)
+                encoders.encode_base64(part)
+                part.add_header(
+                    "Content-Disposition",
+                    'attachment; filename="toast_invoice_import.csv"',
+                )
+                msg.attach(part)
 
-                    st.success("CSV sent to Back Office successfully!")
-                except Exception as e:
-                    st.error(f"Failed to send email: {type(e).__name__}: {e}")
+                with smtplib.SMTP("mail.smtp2go.com", 2525) as server:
+                    server.starttls()
+                    server.login(sender, sender_pwd)
+                    server.sendmail(sender, recipient, msg.as_string())
 
-        with col2:
-            st.download_button(
-                label="⬇️ Download Toast CSV",
-                data=edited_export_df.to_csv(index=False).encode('utf-8'),
-                file_name="toast_invoice_upload.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
+                st.success("✅ CSV sent to Back Office successfully!")
+            except KeyError as e:
+                st.error(f"Missing email configuration in AWS Secrets: {e}")
+            except Exception as e:
+                st.error(f"Failed to send email: {type(e).__name__}: {e}")
 
-        st.divider()
+    with col2:
+        st.download_button(
+            label="⬇️ Download Toast CSV",
+            data=edited_export_df.to_csv(index=False).encode('utf-8'),
+            file_name="toast_invoice_import.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
 
-        if st.button("🔄 Scan a New Invoice", use_container_width=True):
-            for key in list(st.session_state.keys()):
-                if key.startswith("markup_"):
-                    del st.session_state[key]
-            del st.session_state.invoice_data
-            del st.session_state.current_file
-            st.rerun()
+    st.divider()
+
+    if st.button("🔄 Scan a New Invoice", use_container_width=True):
+        del st.session_state.invoice_data
+        del st.session_state.current_files
+        st.rerun()
