@@ -14,8 +14,12 @@ from datetime import datetime
 # --- PAGE CONFIG & MOBILE UI ---
 st.set_page_config(page_title="Invoice Scanner", page_icon="🧾", layout="wide")
 
+# This CSS hides the Streamlit top menu, footer, and styles the buttons
 st.markdown("""
     <style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
     .stButton>button { height: 3.5em; font-size: 18px; font-weight: bold; border-radius: 8px; }
     [data-testid="stMetricValue"] { font-size: 1.8rem; color: #1E88E5; }
     </style>
@@ -25,7 +29,7 @@ st.markdown("""
 try:
     APP_PASSWORD = st.secrets["APP_PASSWORD"]
 except KeyError:
-    st.error("⚠️ App password not found in secrets. Please configure it.")
+    st.error("⚠️ App password not found in server secrets. Please contact Administrator.")
     st.stop()
 
 if "authenticated" not in st.session_state:
@@ -44,21 +48,13 @@ if not st.session_state.authenticated:
 # --- END PASSWORD GATE ---
 
 # --- SIDEBAR CONFIG ---
-st.sidebar.title("⚙️ Settings")
-try:
-    default_api_key = st.secrets["GEMINI_API_KEY"]
-except KeyError:
-    default_api_key = ""
-
-api_key = st.sidebar.text_input("Gemini API Key", value=default_api_key, type="password")
-
+st.sidebar.title("⚙️ Instructions")
 st.sidebar.markdown("""
----
-**Instructions:**
 1. Upload vendor invoice images.
-2. Add context if needed (e.g., 'All items are new').
+2. Add context if needed (e.g., 'All items are new', 'Markup 4x').
 3. Click Extract Data.
-4. The app will automatically build Toast & Shopify CSVs.
+4. Review the data on screen.
+5. Email Toast & Shopify files to the Back Office.
 """)
 
 # --- MAIN UI ---
@@ -147,40 +143,43 @@ if uploaded_files:
     if "current_files" not in st.session_state or st.session_state.current_files != file_names:
         
         if st.button("✨ Extract Data", use_container_width=True, type="primary"):
-            if not api_key:
-                st.error("Please provide a Gemini API Key in the sidebar or secrets.")
-            else:
-                with st.spinner("Analyzing invoices with Gemini Pro..."):
-                    try:
-                        genai.configure(api_key=api_key)
-                        model = genai.GenerativeModel('gemini-pro-latest')
-                        
-                        prompt = get_system_prompt(extra_instructions)
-                        images = [Image.open(file) for file in uploaded_files]
-                        inputs = [prompt] + images
-                        
-                        response = model.generate_content(inputs)
-                        
-                        raw_csv = response.text.strip()
-                        if raw_csv.startswith("```csv"): raw_csv = raw_csv[6:]
-                        if raw_csv.startswith("```"): raw_csv = raw_csv[3:]
-                        if raw_csv.endswith("```"): raw_csv = raw_csv[:-3]
-                        raw_csv = raw_csv.strip()
-                        
-                        df = pd.read_csv(io.StringIO(raw_csv))
-                        
-                        # Apply Custom Logical Sorting
-                        if 'size' in df.columns and 'color' in df.columns:
-                            df['_size_rank'] = df['size'].apply(get_size_rank)
-                            df = df.sort_values(by=['pos name', 'color', '_size_rank'], na_position='first')
-                            df = df.drop(columns=['_size_rank'])
-                        
-                        st.session_state.invoice_data = df
-                        st.session_state.current_files = file_names
-                        st.rerun()
+            try:
+                backend_api_key = st.secrets["GEMINI_API_KEY"]
+            except KeyError:
+                st.error("⚠️ System Error: Gemini API Key missing from server secrets. Contact Administrator.")
+                st.stop()
+                
+            with st.spinner("Analyzing invoices with Gemini Pro..."):
+                try:
+                    genai.configure(api_key=backend_api_key)
+                    model = genai.GenerativeModel('gemini-pro-latest')
+                    
+                    prompt = get_system_prompt(extra_instructions)
+                    images = [Image.open(file) for file in uploaded_files]
+                    inputs = [prompt] + images
+                    
+                    response = model.generate_content(inputs)
+                    
+                    raw_csv = response.text.strip()
+                    if raw_csv.startswith("```csv"): raw_csv = raw_csv[6:]
+                    if raw_csv.startswith("```"): raw_csv = raw_csv[3:]
+                    if raw_csv.endswith("```"): raw_csv = raw_csv[:-3]
+                    raw_csv = raw_csv.strip()
+                    
+                    df = pd.read_csv(io.StringIO(raw_csv))
+                    
+                    # Apply Custom Logical Sorting
+                    if 'size' in df.columns and 'color' in df.columns:
+                        df['_size_rank'] = df['size'].apply(get_size_rank)
+                        df = df.sort_values(by=['pos name', 'color', '_size_rank'], na_position='first')
+                        df = df.drop(columns=['_size_rank'])
+                    
+                    st.session_state.invoice_data = df
+                    st.session_state.current_files = file_names
+                    st.rerun()
 
-                    except Exception as e:
-                        st.error(f"❌ An error occurred: {str(e)}")
+                except Exception as e:
+                    st.error(f"❌ An error occurred: {str(e)}")
 
 # --- DISPLAY & EXPORT ---
 if "invoice_data" in st.session_state and not st.session_state.invoice_data.empty:
