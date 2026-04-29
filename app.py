@@ -8,6 +8,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
+from datetime import datetime
 
 # --- PAGE CONFIG & MOBILE UI ---
 st.set_page_config(page_title="Invoice Scanner", page_icon="🧾", layout="centered")
@@ -109,12 +110,12 @@ if uploaded_files:
         
         if st.button("✨ Extract Data", use_container_width=True, type="primary"):
             if not api_key:
-                st.error("Please provide a Gemini API Key in the sidebar or AWS secrets.")
+                st.error("Please provide a Gemini API Key in the sidebar or secrets.")
             else:
-                with st.spinner("Analyzing invoices with Gemini Pro..."):
+                with st.spinner("Analyzing invoices with Gemini 1.5 Pro..."):
                     try:
                         genai.configure(api_key=api_key)
-                        model = genai.GenerativeModel('gemini-pro-latest')
+                        model = genai.GenerativeModel('gemini-1.5-pro')
                         
                         prompt = get_system_prompt(extra_instructions)
                         images = [Image.open(file) for file in uploaded_files]
@@ -149,6 +150,23 @@ if "invoice_data" in st.session_state and not st.session_state.invoice_data.empt
     # Interactive Data Editor
     edited_export_df = st.data_editor(st.session_state.invoice_data, use_container_width=True, hide_index=True)
     
+    # --- NEW LOGIC: Generate Dynamic File Name ---
+    try:
+        # Grab the brand/subcategory from the first row of the data
+        brand_name = str(edited_export_df['subcategory'].iloc[0]).strip()
+        # Fallback just in case the AI left it blank
+        if not brand_name or brand_name.lower() == "nan":
+            brand_name = "Invoice"
+    except:
+        brand_name = "Invoice"
+        
+    # Get today's date in MMDDYYYY format
+    date_str = datetime.now().strftime("%m%d%Y")
+    
+    # Combine them into the final file name
+    dynamic_filename = f"{brand_name} {date_str}.csv"
+    # ---------------------------------------------
+
     st.divider()
 
     col1, col2 = st.columns(2)
@@ -165,15 +183,15 @@ if "invoice_data" in st.session_state and not st.session_state.invoice_data.empt
                 msg = MIMEMultipart()
                 msg["From"] = sender
                 msg["To"] = recipient
-                msg["Subject"] = "Toast Invoice Upload - New Items"
-                msg.attach(MIMEText("Please find the extracted new items CSV attached.", "plain"))
+                msg["Subject"] = f"Toast Invoice Upload - {brand_name}"
+                msg.attach(MIMEText(f"Please find the extracted new items CSV for {brand_name} attached.", "plain"))
 
                 part = MIMEBase("application", "octet-stream")
                 part.set_payload(csv_bytes)
                 encoders.encode_base64(part)
                 part.add_header(
                     "Content-Disposition",
-                    'attachment; filename="toast_invoice_import.csv"',
+                    f'attachment; filename="{dynamic_filename}"',
                 )
                 msg.attach(part)
 
@@ -182,9 +200,9 @@ if "invoice_data" in st.session_state and not st.session_state.invoice_data.empt
                     server.login(sender, sender_pwd)
                     server.sendmail(sender, recipient, msg.as_string())
 
-                st.success("✅ CSV sent to Back Office successfully!")
+                st.success(f"✅ {dynamic_filename} sent to Back Office successfully!")
             except KeyError as e:
-                st.error(f"Missing email configuration in AWS Secrets: {e}")
+                st.error(f"Missing email configuration in Secrets: {e}")
             except Exception as e:
                 st.error(f"Failed to send email: {type(e).__name__}: {e}")
 
@@ -192,7 +210,7 @@ if "invoice_data" in st.session_state and not st.session_state.invoice_data.empt
         st.download_button(
             label="⬇️ Download Toast CSV",
             data=edited_export_df.to_csv(index=False).encode('utf-8'),
-            file_name="toast_invoice_import.csv",
+            file_name=dynamic_filename,
             mime="text/csv",
             use_container_width=True,
         )
