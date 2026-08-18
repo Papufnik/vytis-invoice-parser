@@ -51,6 +51,12 @@ a while: it works, but three things needed real fixes, not a rewrite.
    remaining Toast file (was attaching two files, Toast + Shopify)
    and updated the button label/body text accordingly -- did not touch
    the underlying SMTP call itself since there's no diagnosed bug in it.
+   UPDATE 2026-08-18, after real use: sending itself worked, but Sween
+   reported attachments arriving with no filename and no recognizable
+   type. Root cause found -- see the attachment-building loop's own
+   comment near MIMEApplication for the fix (was MIMEBase +
+   "application/octet-stream", a generic untyped placeholder that never
+   told the recipient's mail client this was an .xlsx file at all).
 
 4. PURCHASING & RECEIVING EXPORT ADDED (separate follow-up request, same
    day). Sween's actual bottleneck wasn't the scan -- it was Toast's own
@@ -107,8 +113,7 @@ from PIL import Image
 from openpyxl.utils import get_column_letter
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from email.mime.base import MIMEBase
-from email import encoders
+from email.mime.application import MIMEApplication
 from datetime import datetime
 
 
@@ -616,10 +621,27 @@ if "invoice_data" in st.session_state and not st.session_state.invoice_data.empt
                     "plain",
                 ))
 
+                # Fixed 2026-08-18 -- Sween reported attachments arriving
+                # with no name and no recognizable file type. Root cause:
+                # MIMEBase("application", "octet-stream") declares every
+                # attachment as generic untyped binary data, and only the
+                # Content-Disposition header carried a filename -- some
+                # mail clients read the filename from Content-Type's own
+                # `name` parameter instead (or in addition), so a client
+                # that checks there first found nothing. MIMEApplication
+                # with the real xlsx subtype + Name= sets BOTH: the
+                # correct application/vnd.openxmlformats-officedocument.
+                # spreadsheetml.sheet type (same one already used for the
+                # download buttons below) AND the filename in Content-Type,
+                # on top of the Content-Disposition filename already being
+                # set explicitly -- covers whichever header a given client
+                # actually reads.
                 for file_bytes, filename in ((toast_bytes, toast_filename), (receiving_bytes, receiving_filename)):
-                    part = MIMEBase("application", "octet-stream")
-                    part.set_payload(file_bytes)
-                    encoders.encode_base64(part)
+                    part = MIMEApplication(
+                        file_bytes,
+                        _subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        Name=filename,
+                    )
                     part.add_header("Content-Disposition", f'attachment; filename="{filename}"')
                     msg.attach(part)
 
