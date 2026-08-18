@@ -1,20 +1,3 @@
-import streamlit as st
-import google.generativeai as genai
-import pandas as pd
-import io
-import smtplib
-import re
-import difflib
-import gspread
-from google.oauth2.service_account import Credentials
-from PIL import Image
-from openpyxl.utils import get_column_letter
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.base import MIMEBase
-from email import encoders
-from datetime import datetime
-
 """
 Mary Jane's Invoice Scanner -- unpacked from vytis-invoice-parser-main.zip
 2026-08-18 and fixed per Sween's real-world feedback after using this for
@@ -110,6 +93,24 @@ a while: it works, but three things needed real fixes, not a rewrite.
    exactly as before -- it's a helpful extra, never a dependency the
    rest of the app should break over.
 """
+
+import streamlit as st
+import google.generativeai as genai
+import pandas as pd
+import io
+import smtplib
+import re
+import difflib
+import gspread
+from google.oauth2.service_account import Credentials
+from PIL import Image
+from openpyxl.utils import get_column_letter
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
+from datetime import datetime
+
 
 # --- PAGE CONFIG & MOBILE UI ---
 st.set_page_config(page_title="Invoice Scanner", page_icon="🧾", layout="wide")
