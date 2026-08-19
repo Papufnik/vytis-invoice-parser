@@ -604,7 +604,18 @@ if "invoice_data" in st.session_state and not st.session_state.invoice_data.empt
         item_library_rows = edited_export_df[edited_export_df["Add to Item Library?"]]
     else:
         item_library_rows = edited_export_df
-    toast_output = item_library_rows[['name', 'pos name', 'category group', 'category', 'subcategory', 'price', 'cost', 'barcode', 'supplier']]
+    toast_output = item_library_rows[['name', 'pos name', 'category group', 'category', 'subcategory', 'price', 'cost', 'barcode', 'supplier']].copy()
+    # Added 2026-08-19: Sween's real-world test found Toast's Receiving
+    # import can't match ANY item back to its catalog record if that
+    # record's own `supplier item id` field was never set -- and it never
+    # was, for anything created through this Item Library file, because
+    # this column didn't used to be here. Backfilled once for existing
+    # items via a separate one-time fix (MaryJanes_SupplierItemID_
+    # Backfill_ToastImport.csv); this closes the gap going forward so
+    # every NEW item this app creates gets it saved at creation time.
+    # Same `name` value already used as Supplier Item ID in the Receiving
+    # export -- one consistent SKU-style identifier across both files.
+    toast_output.insert(1, "supplier item id", toast_output["name"])
     toast_bytes = build_toast_xlsx(toast_output)
     receiving_bytes = build_receiving_xlsx(edited_export_df)
 
