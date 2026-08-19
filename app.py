@@ -257,16 +257,26 @@ def build_receiving_xlsx(edited_df):
         Receiving Unit Net Cost, Extension Cost, Barcode, PLU, Price (Retail)
 
     Column mapping decisions, stated explicitly rather than silently:
-      - Supplier Item ID <- the same `name` value already used as this
-        store's own SKU/identifier in the Item Library export. Toast's
-        docs say it primarily matches on Supplier Item ID with barcode as
-        a secondary/fallback match, and Toast's own review screen lets you
-        manually link anything that doesn't match automatically -- so an
-        imperfect ID here isn't silently wrong, it just falls through to
-        that manual-match step, same safety net Toast already built.
-      - Item Name <- `pos name` (the verbatim item description), since
-        that's semantically closer to "Item Name" than the SKU-style
-        `name` field.
+      - UPDATE 2026-08-19, after real use: Sween confirmed Toast's actual
+        receiving screen matched ZERO of these against existing catalog
+        items -- the original theory below (Supplier Item ID as the
+        primary match key) doesn't hold up against how Toast's receiving
+        import actually matches in practice. What it really keys off is
+        Item Name against the catalog's own `name` field -- and this
+        app's `name` (the SKU-style field, e.g. "P1015-Beige-L") IS
+        already confirmed (see match_catalog()/extract_base_sku() above)
+        to be the same convention Toast's own `name` field uses for
+        anything entered through this app. So `name` now goes in BOTH
+        Item Name and Supplier Item ID -- `pos name` (verbatim
+        description) is no longer used in this export at all, since it
+        was never what Toast was actually matching against.
+      - Supplier Item ID <- `name`, same SKU-style value as Item Name.
+        Kept populated too since Toast's own docs describe it as a
+        secondary/fallback signal -- redundant with Item Name now, but
+        harmless, and Toast's own review screen still lets you manually
+        link anything that doesn't match automatically either way.
+      - Item Name <- `name` (the SKU-style field) -- see UPDATE above for
+        why this replaced `pos name`.
       - Item Quantity <- new `quantity` field (see the Gemini prompt above).
       - Receiving Unit Net Cost <- `cost`.
       - Extension Cost <- cost * quantity, computed here rather than left
@@ -295,7 +305,7 @@ def build_receiving_xlsx(edited_df):
     """
     receiving_df = pd.DataFrame({
         "Supplier Item ID": edited_df["name"],
-        "Item Name": edited_df["pos name"],
+        "Item Name": edited_df["name"],
         "Item Quantity": pd.to_numeric(edited_df["quantity"], errors="coerce").fillna(0).astype(int),
         "Receiving Unit Net Cost": pd.to_numeric(edited_df["cost"], errors="coerce"),
         "Barcode": edited_df["barcode"],
