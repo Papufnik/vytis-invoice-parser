@@ -196,7 +196,7 @@ def get_system_prompt(user_instructions):
        - Non-Clothing: Just the [SKU]
     3. Color & Size Columns: Extract the Color and Size from the description and place them in their respective columns. If none exist, leave blank.
     4. POS Name: Copy the description verbatim.
-    5. Category Mapping: Map based on item type (Accessories, Beer, BTG Wine, Clothing, Gifts, Handbags, Hats, Home, Jewelry, Snacks & Drinks, Wine Bottles). Category Group is ALWAYS "Retail".
+    5. Category Mapping: Map based on item type (Accessories, Beer, BTG Wine, Clothing, Gifts, Handbags, Hats, Home, Jewelry, Snacks & Drinks, Wine Bottles). Leave the category group column blank -- it's filled in automatically after extraction based on the category you pick, not by you.
     6. Cost & Price: Handwritten value if present; else printed unit cost. Price is Handwritten retail price, or Cost * 3. ALWAYS round the retail price to nearest dollar.
     7. Barcode: Printed UPC/barcode or leave blank. Preserve every digit exactly as printed, including leading zeros -- do not treat it as a number.
     8. Subcategory & Supplier: Use the brand name found at top of invoice.
@@ -504,6 +504,39 @@ if uploaded_files:
                     raw_csv = raw_csv.strip()
 
                     df = pd.read_csv(io.StringIO(raw_csv))
+
+                    # Added 2026-08-20, per Sween: category group used to be
+                    # hardcoded to "Retail" for every item (see the prompt
+                    # above), but Jewelry and Wine Bar are their own
+                    # top-level category groups in Toast now, not
+                    # subcategories under Retail -- confirmed against the
+                    # live Item Library export: 1,496 items already sit
+                    # under Category Group "Jewelry", 101 under "Wine Bar".
+                    # Gemini already classifies each line's `category`
+                    # correctly (Jewelry, Beer, BTG Wine, Wine Bottles, etc
+                    # -- see rule 5 above), so rather than also asking it to
+                    # get the group/category pairing right, that's derived
+                    # here deterministically from whatever category it
+                    # already picked. Anything not in this map still
+                    # defaults to "Retail", same as before. This also
+                    # handles one invoice with a mix of item types (e.g. a
+                    # few Jewelry lines alongside Clothing lines) without
+                    # needing an upfront "what kind of invoice is this"
+                    # question -- each line gets its own group. Still fully
+                    # editable in the review table below if a specific item
+                    # needs a manual override.
+                    CATEGORY_GROUP_OVERRIDES = {
+                        "jewelry": "Jewelry",
+                        "beer": "Wine Bar",
+                        "btg wine": "Wine Bar",
+                        "wine bottles": "Wine Bar",
+                    }
+                    if "category" in df.columns:
+                        df["category group"] = (
+                            df["category"].astype(str).str.strip().str.lower()
+                            .map(CATEGORY_GROUP_OVERRIDES)
+                            .fillna("Retail")
+                        )
 
                     # Force barcode to string dtype immediately -- otherwise
                     # a digit-only barcode column can get silently upcast to
