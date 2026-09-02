@@ -1,103 +1,100 @@
 """
-Mary Jane's Invoice Scanner -- unpacked from vytis-invoice-parser-main.zip
-2026-08-18 and fixed per Sween's real-world feedback after using this for
-a while: it works, but three things needed real fixes, not a rewrite.
+Retail Invoice Scanner -- fixed per the business owner's real-world feedback
+after using this for a while: it works, but three things needed real fixes,
+not a rewrite.
 
-1. SHOPIFY EXPORT REMOVED ENTIRELY. Sween confirmed the store doesn't use
-   Shopify anymore -- the whole SHOPIFY_COLUMNS block, the parent/child
+1. SHOPIFY EXPORT REMOVED ENTIRELY. The business confirmed the store doesn't
+   use Shopify anymore -- the whole SHOPIFY_COLUMNS block, the parent/child
    variant-grouping logic, the second download button, and the "Shopify"
    half of the emailed attachments are gone.
 
 2. BARCODE BUG, ROOT-CAUSED: the original app wrapped barcodes in Excel's
    `="12345678"` formula trick to stop Excel from mangling long digit
    strings into scientific notation on open. That trick IS correct
-   Excel behavior -- but Sween confirmed this file sometimes goes
-   straight to Toast's upload without ever being opened in Excel first
-   ("I try to open it to check it but sometimes I get too lazy"). When
-   that happens, nothing evaluates the formula, so Toast (or anything
-   else reading the raw file) sees the literal text `="12345678"`,
-   quotes and all -- exactly the "useless barcode" Sween described.
+   Excel behavior -- but real-world use confirmed this file sometimes goes
+   straight to the POS system's upload without ever being opened in Excel
+   first. When that happens, nothing evaluates the formula, so the POS
+   system (or anything else reading the raw file) sees the literal text
+   `="12345678"`, quotes and all -- exactly the "useless barcode" reported.
    There is no single CSV trick that's correct both ways at once --
    formula evaluation only happens inside a spreadsheet app opening the
    file, never when a plain CSV reader or an importer reads the same
    bytes directly.
    FIX: export as a real .xlsx file instead of .csv, with the barcode
    column's cell format explicitly set to Text (openpyxl
-   number_format = '@'). This isn't a workaround -- it's what Toast's own
-   official Item Library template does (confirmed against Toast's
-   support docs: "Toast Retail: Build Your Import Template" explicitly
-   ships an .xlsx template and warns about barcodes losing leading zeros
-   if not kept as text). A genuine XLSX text-formatted cell displays
-   correctly if opened in Excel AND reads back as the correct plain
-   string if opened by anything else (Toast's importer, pandas,
-   openpyxl) -- no formula evaluation dependency either way. Barcode
-   values are also now forced to string dtype immediately after Gemini's
-   CSV response is parsed, so pandas never silently upcasts a
-   digit-only barcode column to int/float and strips a leading zero
-   before export even happens -- the same leading-zero risk Toast's own
-   docs flag independently of the scientific-notation issue.
+   number_format = '@'). This isn't a workaround -- it's what the POS
+   vendor's own official item-library import template does (confirmed
+   against the vendor's support docs, which explicitly warn about
+   barcodes losing leading zeros if not kept as text). A genuine XLSX
+   text-formatted cell displays correctly if opened in Excel AND reads
+   back as the correct plain string if opened by anything else (the POS
+   importer, pandas, openpyxl) -- no formula evaluation dependency either
+   way. Barcode values are also now forced to string dtype immediately
+   after the extraction model's CSV response is parsed, so pandas never
+   silently upcasts a digit-only barcode column to int/float and strips a
+   leading zero before export even happens -- the same leading-zero risk
+   the POS vendor's own docs flag independently of the scientific-notation
+   issue.
 
-3. EMAIL SENDING -- NOT independently verifiable from here. Sween
-   reported it "just kinda never sends" the last couple months, no
-   specific error noted. The SMTP logic itself (mail.smtp2go.com:2525,
-   STARTTLS, login, sendmail) is structurally correct for SMTP2GO's
-   documented settings, and the existing try/except already surfaces
-   the real exception via st.error() rather than failing silently -- so
-   if this is still broken after this fix, the on-screen error message
-   the next time the button is clicked is the fastest real diagnostic,
-   not another guess. Likely real-world causes, unverified: an expired
-   SMTP2GO app password, a suspended/rate-limited SMTP2GO account, or
-   st.secrets values lost on a redeploy. Cleaned up to attach the one
-   remaining Toast file (was attaching two files, Toast + Shopify)
-   and updated the button label/body text accordingly -- did not touch
-   the underlying SMTP call itself since there's no diagnosed bug in it.
-   UPDATE 2026-08-18, after real use: sending itself worked, but Sween
-   reported attachments arriving with no filename and no recognizable
-   type. Root cause found -- see the attachment-building loop's own
-   comment near MIMEApplication for the fix (was MIMEBase +
-   "application/octet-stream", a generic untyped placeholder that never
-   told the recipient's mail client this was an .xlsx file at all).
+3. EMAIL SENDING -- NOT independently verifiable from here. Reported as
+   "just kinda never sends" for a stretch, no specific error noted. The
+   SMTP logic itself (SMTP2GO, STARTTLS, login, sendmail) is structurally
+   correct for the provider's documented settings, and the existing
+   try/except already surfaces the real exception via st.error() rather
+   than failing silently -- so if this is still broken after this fix,
+   the on-screen error message the next time the button is clicked is the
+   fastest real diagnostic, not another guess. Likely real-world causes,
+   unverified: an expired app password, a suspended/rate-limited SMTP
+   account, or st.secrets values lost on a redeploy. Cleaned up to attach
+   only the one remaining file (was attaching two, before the Shopify
+   export was removed) and updated the button label/body text
+   accordingly -- did not touch the underlying SMTP call itself since
+   there's no diagnosed bug in it.
+   UPDATE, after real use: sending itself worked, but attachments arrived
+   with no filename and no recognizable type. Root cause found -- see the
+   attachment-building loop's own comment near MIMEApplication for the
+   fix (was MIMEBase + "application/octet-stream", a generic untyped
+   placeholder that never told the recipient's mail client this was an
+   .xlsx file at all).
 
 4. PURCHASING & RECEIVING EXPORT ADDED (separate follow-up request, same
-   day). Sween's actual bottleneck wasn't the scan -- it was Toast's own
-   receiving screen, where every item has to be searched for and added
-   one at a time. Toast Retail has a bulk "Receive via invoice -> Import
+   day). The real bottleneck wasn't the scan -- it was the POS system's own
+   receiving screen, where every item has to be searched for and added one
+   at a time. The POS vendor has a bulk "receive via invoice -> import
    file" feature for exactly this, but it needs a DIFFERENT column
-   template than the Item Library export above (verified against Toast's
-   own support article, "Toast Retail: Import Invoices", 2026-08-18 --
-   not guessed): Supplier Item ID, Item Name, and Item Quantity required;
-   Receiving Unit Net Cost, Extension Cost, and Barcode recognized.
-   Quantity wasn't extracted at all before this -- added to the Gemini
-   prompt as its own field, same handwritten-correction-takes-priority
-   pattern already used for cost/price. See build_receiving_xlsx()'s own
-   docstring for the exact column mapping and what was deliberately left
-   out (Price, Receiving Unit, PLU) and why. Sween confirmed invoices
-   consistently show clear quantities and generally carry a matching
-   order number back to his Order List -- the SEPARATE "auto-mark
-   received on the Order List" idea from this same conversation is
-   explicitly NOT built here; it needs its own pass since it means
-   writing to a live shared Google Sheet automatically, a bigger and
-   riskier change than a second export file.
+   template than the item-library export above (verified against the
+   vendor's own support article -- not guessed): Supplier Item ID, Item
+   Name, and Item Quantity required; Receiving Unit Net Cost, Extension
+   Cost, and Barcode recognized. Quantity wasn't extracted at all before
+   this -- added to the extraction prompt as its own field, same
+   handwritten-correction-takes-priority pattern already used for
+   cost/price. See build_receiving_xlsx()'s own docstring for the exact
+   column mapping and what was deliberately left out (Price, Receiving
+   Unit, PLU) and why. Invoices consistently show clear quantities and
+   generally carry a matching order number back to the business's own
+   order list -- a SEPARATE "auto-mark received on the order list" idea
+   from this same conversation is explicitly NOT built here; it needs its
+   own pass since it means writing to a live shared spreadsheet
+   automatically, a bigger and riskier change than a second export file.
 
-5. CATALOG DUPLICATE CHECK, ITEM LIBRARY EXPORT ONLY (2026-08-18). The
-   real risk with an invoice scanner that always suggests "new item" is
-   silently re-creating an item Toast already has -- Sween's catalog
-   currently runs ~14k items. This app now checks every extracted line
+5. CATALOG DUPLICATE CHECK, ITEM LIBRARY EXPORT ONLY. The real risk with
+   an invoice scanner that always suggests "new item" is silently
+   re-creating an item the POS system already has -- the catalog runs into
+   the thousands of items. This app now checks every extracted line
    against a live mirror of that catalog (see load_catalog_lookup() and
-   match_catalog() below, and push_catalog_lookup_sheet.py's header for
-   how the mirror gets there -- this app has no direct access to the
-   local warehouse.sqlite it's built from). A likely-existing item gets
-   its "Add to Item Library?" checkbox unchecked by default -- excluded
-   from that export -- with the match reason shown so it's a decision a
-   human can override, not a silent drop. This is DELIBERATELY SCOPED TO
-   THE ITEM LIBRARY EXPORT ONLY: the Receiving export always includes
-   every scanned line regardless of the checkbox, because a restock of
-   an item Toast already has still needs to be received -- only genuinely
-   NEW items need to go through the Item Library import at all. If the
-   catalog mirror isn't reachable (secrets not configured yet, or a
-   fetch error), this whole check silently no-ops and every item behaves
-   exactly as before -- it's a helpful extra, never a dependency the
-   rest of the app should break over.
+   match_catalog() below -- this app has no direct access to the
+   business's local database it's built from). A likely-existing item
+   gets its "Add to Item Library?" checkbox unchecked by default --
+   excluded from that export -- with the match reason shown so it's a
+   decision a human can override, not a silent drop. This is DELIBERATELY
+   SCOPED TO THE ITEM LIBRARY EXPORT ONLY: the Receiving export always
+   includes every scanned line regardless of the checkbox, because a
+   restock of an item the POS already has still needs to be received --
+   only genuinely NEW items need to go through the item-library import at
+   all. If the catalog mirror isn't reachable (secrets not configured
+   yet, or a fetch error), this whole check silently no-ops and every
+   item behaves exactly as before -- it's a helpful extra, never a
+   dependency the rest of the app should break over.
 """
 
 import streamlit as st
@@ -142,7 +139,7 @@ if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 
 if not st.session_state.authenticated:
-    st.title("Mary Jane's Scanner")
+    st.title("Retail Invoice Scanner")
     entered = st.text_input("Enter password to continue:", type="password")
     if st.button("Login", use_container_width=True):
         if entered == APP_PASSWORD:
@@ -160,13 +157,13 @@ st.sidebar.markdown("""
 2. Add context if needed (e.g., 'All items are new', 'Markup 4x').
 3. Click Extract Data.
 4. Review the data on screen -- check quantities too, not just cost/price.
-5. If an item looks like it's already in Toast, its **Add to Item Library?** box comes unchecked automatically -- check the note next to it and re-check the box yourself if it's actually a genuinely new item.
-6. Two files come out: **Item Library** (only the checked, genuinely-new items) and **Receiving** (every scanned line, new or restock -- this is the one that goes into Toast's Purchasing & Receiving bulk import, so you don't have to search for each item by hand).
-7. Email both to the Back Office, or download them directly.
+5. If an item looks like it's already in the catalog, its **Add to Item Library?** box comes unchecked automatically -- check the note next to it and re-check the box yourself if it's actually a genuinely new item.
+6. Two files come out: **Item Library** (only the checked, genuinely-new items) and **Receiving** (every scanned line, new or restock -- this is the one that goes into the POS system's bulk import, so you don't have to search for each item by hand).
+7. Email both to the back office, or download them directly.
 """)
 
 # --- MAIN UI ---
-st.title("Mary Jane's Invoice Scanner 🧾")
+st.title("Invoice Scanner 🧾")
 st.write("Snap a picture of a vendor packing slip or invoice.")
 
 extra_instructions = st.text_area(
@@ -230,12 +227,12 @@ def build_toast_xlsx(df):
     """Writes df to an in-memory .xlsx (not .csv) with the barcode column's
     cell format forced to Text, so it displays correctly if a human opens
     it in Excel AND reads back correctly as a plain string if anything
-    else (Toast's importer, pandas, openpyxl) reads the file directly --
+    else (the POS importer, pandas, openpyxl) reads the file directly --
     no formula-evaluation dependency either way. See module docstring."""
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Toast Import")
-        worksheet = writer.sheets["Toast Import"]
+        df.to_excel(writer, index=False, sheet_name="POS Import")
+        worksheet = writer.sheets["POS Import"]
         if "barcode" in df.columns:
             col_idx = list(df.columns).index("barcode") + 1  # openpyxl columns are 1-indexed
             col_letter = get_column_letter(col_idx)
@@ -245,61 +242,61 @@ def build_toast_xlsx(df):
 
 
 def build_receiving_xlsx(edited_df):
-    """Second export, added 2026-08-18: Toast Retail's Purchasing & Receiving
-    'Import file' format (Retail > Purchasing > Purchasing & Receiving >
-    Receive via invoice > Import file) -- a DIFFERENT template from the
-    Item Library import build_toast_xlsx() produces above. Columns and
-    requirements verified directly against Toast's own support article
-    ("Toast Retail: Import Invoices", support.toasttab.com) on 2026-08-18,
-    not guessed:
+    """Second export: the POS vendor's Purchasing & Receiving 'import file'
+    format -- a DIFFERENT template from the item-library import
+    build_toast_xlsx() produces above. Columns and requirements verified
+    directly against the vendor's own support documentation, not guessed:
       - Required: Supplier Item ID, Item Name, Item Quantity
       - Recognized optional: Receiving Unit, Qty/Receiving Unit,
         Receiving Unit Net Cost, Extension Cost, Barcode, PLU, Price (Retail)
 
     Column mapping decisions, stated explicitly rather than silently:
-      - UPDATE 2026-08-19, after real use: Sween confirmed Toast's actual
-        receiving screen matched ZERO of these against existing catalog
-        items -- the original theory below (Supplier Item ID as the
-        primary match key) doesn't hold up against how Toast's receiving
-        import actually matches in practice. What it really keys off is
-        Item Name against the catalog's own `name` field -- and this
-        app's `name` (the SKU-style field, e.g. "P1015-Beige-L") IS
-        already confirmed (see match_catalog()/extract_base_sku() above)
-        to be the same convention Toast's own `name` field uses for
-        anything entered through this app. So `name` now goes in BOTH
-        Item Name and Supplier Item ID -- `pos name` (verbatim
-        description) is no longer used in this export at all, since it
-        was never what Toast was actually matching against.
+      - UPDATE, after real use: real-world testing found the POS vendor's
+        actual receiving screen matched ZERO of these against existing
+        catalog items -- the original theory below (Supplier Item ID as
+        the primary match key) doesn't hold up against how the vendor's
+        receiving import actually matches in practice. What it really
+        keys off is Item Name against the catalog's own `name` field --
+        and this app's `name` (the SKU-style field, e.g.
+        "P1015-Beige-L") IS already confirmed (see
+        match_catalog()/extract_base_sku() above) to be the same
+        convention the catalog's own `name` field uses for anything
+        entered through this app. So `name` now goes in BOTH Item Name
+        and Supplier Item ID -- `pos name` (verbatim description) is no
+        longer used in this export at all, since it was never what the
+        vendor's import was actually matching against.
       - Supplier Item ID <- `name`, same SKU-style value as Item Name.
-        Kept populated too since Toast's own docs describe it as a
+        Kept populated too since the vendor's own docs describe it as a
         secondary/fallback signal -- redundant with Item Name now, but
-        harmless, and Toast's own review screen still lets you manually
-        link anything that doesn't match automatically either way.
+        harmless, and the vendor's own review screen still lets you
+        manually link anything that doesn't match automatically either
+        way.
       - Item Name <- `name` (the SKU-style field) -- see UPDATE above for
         why this replaced `pos name`.
-      - Item Quantity <- new `quantity` field (see the Gemini prompt above).
+      - Item Quantity <- new `quantity` field (see the extraction prompt
+        above).
       - Receiving Unit Net Cost <- `cost`.
       - Extension Cost <- cost * quantity, computed here rather than left
-        for Toast to derive, so the number is visible and checkable before
-        upload.
+        for the POS system to derive, so the number is visible and
+        checkable before upload.
       - Barcode <- same barcode column, same text-format safety fix as
         build_toast_xlsx() above (identical bug, identical fix).
       - Receiving Unit, Qty/Receiving Unit, PLU: deliberately left OUT.
         Nothing in the current extraction reliably determines these
         (e.g. whether an item is received by the each vs. by the case),
-        and Toast's own import treats missing optional columns as fine --
-        better to omit than guess.
-      - Price (Retail) <- `price`, INCLUDED despite Toast's own docs
+        and the vendor's own import treats missing optional columns as
+        fine -- better to omit than guess.
+      - Price (Retail) <- `price`, INCLUDED despite the vendor's own docs
         saying the automated import "will not update" retail price on
-        items it already recognizes -- Sween's correct catch (2026-08-18)
-        that this still matters for genuinely NEW items: Toast's own
+        items it already recognizes -- a correct catch during review
+        that this still matters for genuinely NEW items: the vendor's own
         receiving flow lets you create a new item on the spot when
         nothing matches, and that manual popup asks for a price right
         then. Having it already sitting in this same file means not
-        needing to cross-reference the Item Library file at that moment,
+        needing to cross-reference the item-library file at that moment,
         even though the bulk-import mechanism itself won't read it back
         onto an existing item. Reference value for the human, not a
-        live-updated field for Toast's matcher -- worth knowing the
+        live-updated field for the vendor's matcher -- worth knowing the
         difference, not silently treating it as equivalent to the other
         columns here.
     """
@@ -335,11 +332,10 @@ def _norm(s):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_catalog_lookup():
-    """Reads the "MaryJanes_Catalog_Lookup" Google Sheet -- a mirror of
-    the real Toast catalog, pushed from the local db/warehouse.sqlite by
-    push_catalog_lookup_sheet.py (see that script's header for the full
-    why/how). Cached 1 hour per session so a batch of invoices doesn't
-    re-hit the Sheets API on every st.rerun().
+    """Reads a mirror of the real POS catalog from a Google Sheet, kept in
+    sync by a separate script from the business's local database. Cached
+    1 hour per session so a batch of invoices doesn't re-hit the Sheets
+    API on every st.rerun().
 
     Returns None (never raises) if either secret below is missing or the
     fetch fails for any reason -- this check is a helpful extra, not
@@ -373,16 +369,16 @@ def extract_base_sku(row):
     """Strips the Color/Size suffix off an extracted item's `name`, using
     THIS SAME ROW's own separately-extracted `color`/`size` fields --
     never guessed -- per the exact convention get_system_prompt() tells
-    Gemini to build `name` with:
+    the extraction model to build `name` with:
       Clothing Sized:    [SKU]-[Color]-[Size]
       Clothing One-Size: [SKU]-[Color]
       Non-Clothing:      [SKU]              (nothing to strip)
-    Added 2026-08-18 per Sween's point: since this app is the one that
-    defines that naming convention, knowing it exactly is a stronger
-    signal than a blind full-string comparison -- it also correctly
-    resolves a genuinely new color/size of an EXISTING product back to
-    the same base SKU the catalog already has, which a raw exact-match
-    on the full `name` string would miss.
+    Added per the point that since this app is the one that defines that
+    naming convention, knowing it exactly is a stronger signal than a
+    blind full-string comparison -- it also correctly resolves a
+    genuinely new color/size of an EXISTING product back to the same base
+    SKU the catalog already has, which a raw exact-match on the full
+    `name` string would miss.
     """
     name = str(row.get("name", "") or "").strip()
     color = str(row.get("color", "") or "").strip()
@@ -395,9 +391,8 @@ def extract_base_sku(row):
 
 def match_catalog(df, cat_df):
     """Flags each extracted invoice line against the catalog mirror.
-    Four passes, strongest signal first -- see push_catalog_lookup_
-    sheet.py's header for why the catalog's own `name` field doesn't
-    follow one single convention (some items are this app's own
+    Four passes, strongest signal first -- the catalog's own `name` field
+    doesn't follow one single convention (some items are this app's own
     "SKU-Color-Size" style, some are legacy "SKU : Description" strings
     entered a different way), so no one exact-match rule catches
     everything alone:
@@ -407,7 +402,7 @@ def match_catalog(df, cat_df):
       2. Base SKU -- extract_base_sku() strips this row's own Color/Size
          suffix off `name` per the app's known naming formula, then
          compares that against the catalog `name` field's own portion
-         before " : " (the SKU-style prefix Toast's export shows for
+         before " : " (the SKU-style prefix the catalog export shows for
          items entered this same way -- e.g. catalog name
          "CWAH1275-Asst : Vintage Washed Distressed Mountain Cap" has
          base SKU "CWAH1275-Asst"). Catches a new color/size of an
@@ -505,26 +500,20 @@ if uploaded_files:
 
                     df = pd.read_csv(io.StringIO(raw_csv))
 
-                    # Added 2026-08-20, per Sween: category group used to be
-                    # hardcoded to "Retail" for every item (see the prompt
-                    # above), but Jewelry and Wine Bar are their own
-                    # top-level category groups in Toast now, not
-                    # subcategories under Retail -- confirmed against the
-                    # live Item Library export: 1,496 items already sit
-                    # under Category Group "Jewelry", 101 under "Wine Bar".
-                    # Gemini already classifies each line's `category`
-                    # correctly (Jewelry, Beer, BTG Wine, Wine Bottles, etc
-                    # -- see rule 5 above), so rather than also asking it to
-                    # get the group/category pairing right, that's derived
-                    # here deterministically from whatever category it
-                    # already picked. Anything not in this map still
-                    # defaults to "Retail", same as before. This also
-                    # handles one invoice with a mix of item types (e.g. a
-                    # few Jewelry lines alongside Clothing lines) without
-                    # needing an upfront "what kind of invoice is this"
-                    # question -- each line gets its own group. Still fully
-                    # editable in the review table below if a specific item
-                    # needs a manual override.
+                    # Category group is derived deterministically from
+                    # whichever category the extraction model already
+                    # picked, rather than also asking the model to get the
+                    # group/category pairing right -- confirmed against the
+                    # live catalog export that a couple of categories
+                    # (Jewelry, Wine Bar items) are their own top-level
+                    # category groups, not subcategories under the default.
+                    # Anything not in this map still defaults to "Retail",
+                    # same as before. This also handles one invoice with a
+                    # mix of item types (e.g. a few Jewelry lines alongside
+                    # Clothing lines) without needing an upfront "what kind
+                    # of invoice is this" question -- each line gets its
+                    # own group. Still fully editable in the review table
+                    # below if a specific item needs a manual override.
                     CATEGORY_GROUP_OVERRIDES = {
                         "jewelry": "Jewelry",
                         "beer": "Wine Bar",
@@ -544,7 +533,7 @@ if uploaded_files:
                     # zero before the sheet is even built (see fix #2 in
                     # the module docstring -- this is a distinct risk from
                     # the scientific-notation display bug, flagged
-                    # independently in Toast's own import docs).
+                    # independently in the POS vendor's own import docs).
                     if "barcode" in df.columns:
                         df["barcode"] = df["barcode"].astype(str).replace("nan", "")
 
@@ -582,7 +571,7 @@ if "invoice_data" in st.session_state and not st.session_state.invoice_data.empt
         n_possible = int((matched_df["_dup_confidence"] == "possible").sum())
         if n_likely or n_possible:
             st.warning(
-                f"🔎 Catalog check: {n_likely} item(s) look like they're already in Toast "
+                f"🔎 Catalog check: {n_likely} item(s) look like they're already in the catalog "
                 f"(unchecked below, excluded from the Item Library file) and {n_possible} "
                 f"look similar to an existing item (left checked -- worth a glance). "
                 f"This never changes the Receiving file -- every scanned line still gets received."
@@ -614,22 +603,22 @@ if "invoice_data" in st.session_state and not st.session_state.invoice_data.empt
     toast_filename = f"{brand_name} {date_str} - Item Library.xlsx"
     receiving_filename = f"{brand_name} {date_str} - Receiving.xlsx"
 
-    # --- TOAST EXPORTS ---
-    # Two DIFFERENT Toast imports, added 2026-08-18 -- see build_receiving_xlsx's
-    # docstring for exactly why these are separate files, not one:
+    # --- POS EXPORTS ---
+    # Two DIFFERENT POS imports -- see build_receiving_xlsx's docstring for
+    # exactly why these are separate files, not one:
     #   1. Item Library import -- creates/updates the catalog item itself
     #      (name, category, price, cost, barcode, supplier). Only needed for
-    #      genuinely NEW items -- Toast already has everything about an
-    #      existing item.
+    #      genuinely NEW items -- the POS system already has everything
+    #      about an existing item.
     #   2. Purchasing & Receiving import -- logs THIS shipment (quantity
     #      received, net cost paid) against an item already in the catalog.
     #      Needed every time, new item or restock, since it's what actually
     #      updates on-hand inventory count and clears the item-by-item
-    #      manual search Sween described as the real bottleneck.
+    #      manual search described as the real bottleneck.
     # Item Library respects the "Add to Item Library?" checkbox (feature 5,
-    # see module docstring) -- items flagged as likely already in Toast are
-    # excluded here unless a human re-checks the box. Receiving does NOT
-    # filter on this at all: build_receiving_xlsx() gets the full
+    # see module docstring) -- items flagged as likely already in the
+    # catalog are excluded here unless a human re-checks the box. Receiving
+    # does NOT filter on this at all: build_receiving_xlsx() gets the full
     # edited_export_df, every scanned line, because a restock of an
     # existing item still needs to be received -- only the Item Library
     # import (which would try to CREATE the item) needs the exclusion.
@@ -638,13 +627,12 @@ if "invoice_data" in st.session_state and not st.session_state.invoice_data.empt
     else:
         item_library_rows = edited_export_df
     toast_output = item_library_rows[['name', 'pos name', 'category group', 'category', 'subcategory', 'price', 'cost', 'barcode', 'supplier']].copy()
-    # Added 2026-08-19: Sween's real-world test found Toast's Receiving
-    # import can't match ANY item back to its catalog record if that
-    # record's own `supplier item id` field was never set -- and it never
-    # was, for anything created through this Item Library file, because
-    # this column didn't used to be here. Backfilled once for existing
-    # items via a separate one-time fix (MaryJanes_SupplierItemID_
-    # Backfill_ToastImport.csv); this closes the gap going forward so
+    # A real-world test found the POS vendor's Receiving import can't
+    # match ANY item back to its catalog record if that record's own
+    # `supplier item id` field was never set -- and it never was, for
+    # anything created through this Item Library file, because this
+    # column didn't used to be here. Backfilled once for existing items
+    # via a separate one-time fix; this closes the gap going forward so
     # every NEW item this app creates gets it saved at creation time.
     # Same `name` value already used as Supplier Item ID in the Receiving
     # export -- one consistent SKU-style identifier across both files.
@@ -675,21 +663,6 @@ if "invoice_data" in st.session_state and not st.session_state.invoice_data.empt
                     "plain",
                 ))
 
-                # Fixed 2026-08-18 -- Sween reported attachments arriving
-                # with no name and no recognizable file type. Root cause:
-                # MIMEBase("application", "octet-stream") declares every
-                # attachment as generic untyped binary data, and only the
-                # Content-Disposition header carried a filename -- some
-                # mail clients read the filename from Content-Type's own
-                # `name` parameter instead (or in addition), so a client
-                # that checks there first found nothing. MIMEApplication
-                # with the real xlsx subtype + Name= sets BOTH: the
-                # correct application/vnd.openxmlformats-officedocument.
-                # spreadsheetml.sheet type (same one already used for the
-                # download buttons below) AND the filename in Content-Type,
-                # on top of the Content-Disposition filename already being
-                # set explicitly -- covers whichever header a given client
-                # actually reads.
                 for file_bytes, filename in ((toast_bytes, toast_filename), (receiving_bytes, receiving_filename)):
                     part = MIMEApplication(
                         file_bytes,
